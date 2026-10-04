@@ -149,10 +149,12 @@ function setSync() {
   const have = keys.filter(k => S.raw[k]);
   const dot = $("#syncDot"), txt = $("#syncText");
   if (!have.length) { dot.className = "dot warn"; txt.textContent = "Waiting for the first sheet sync"; return; }
-  const oldest = Math.min(...have.map(k => S.rawAt[k] || 0));
-  const ageMin = Math.round((Date.now() - oldest) / 60000);
-  dot.className = "dot " + (have.length < keys.length || ageMin > 30 ? "warn" : "ok");
-  txt.textContent = "Live · sheets checked " + (ageMin < 1 ? "just now" : ageMin + " min ago");
+  // The sync checks every minute but only writes when a sheet changes, so this is "last change", not "last check".
+  const newest = Math.max(...have.map(k => S.rawAt[k] || 0));
+  const mins = Math.round((Date.now() - newest) / 60000);
+  const ago = mins < 1 ? "just now" : mins < 60 ? mins + " min ago" : mins < 1440 ? Math.round(mins / 60) + " h ago" : Math.round(mins / 1440) + " d ago";
+  dot.className = "dot " + (have.length < keys.length ? "warn" : "ok");
+  txt.textContent = "Live · last sheet change " + ago;
 }
 
 /* ---------- SS Tracker data ---------- */
