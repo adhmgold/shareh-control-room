@@ -4,7 +4,10 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { getFirestore, collection, doc, onSnapshot, query, where, setDoc, updateDoc, deleteDoc, addDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
-import { FIREBASE_CONFIG, OWNER_EMAILS, SS_TRACKER_URL } from "./config.js";
+import * as CFG from "./config.js";
+const { FIREBASE_CONFIG, SS_TRACKER_URL } = CFG;
+// Works with both the old (OWNER_EMAIL) and new (OWNER_EMAILS) config.js; both owners are always included.
+const OWNER_EMAILS = [...new Set([...(CFG.OWNER_EMAILS || []), ...(CFG.OWNER_EMAIL ? [CFG.OWNER_EMAIL] : []), "adham.youssry@sciencestreets.com", "adhmgold@gmail.com"])];
 
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
