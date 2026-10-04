@@ -1,25 +1,21 @@
 [hidden]{display:none!important}
 /* Layout: a production control room — sticky tab bar, summary strip first, then panels in a responsive 12-col grid. */
+/* Science Street brand (same palette and type as SS Tracker): cream paper, navy ink, indigo street-sign header, yellow highlights. Light-only by design. */
 :root{
-  --bg:#F2F4F6; --surface:#FFFFFF; --sunk:#E8ECF0; --line:#D6DCE2;
-  --fg:#15202B; --muted:#5B6874; --accent:#2350B8; --accent-soft:#E3EAFB;
-  --ok:#1F7A4D; --ok-soft:#DDF1E6; --warn:#A86200; --warn-soft:#FBEBD3;
-  --bad:#B42318; --bad-soft:#FBE1DE; --idle:#8A96A1;
-  --f-display:"Readex Pro","IBM Plex Sans Arabic",system-ui,sans-serif;
-  --f-body:"IBM Plex Sans Arabic",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --bg:#F5F2E8; --surface:#FFFFFF; --sunk:#EDE7D3; --line:#E3DCC6; --ink:#14202E;
+  --fg:#14202E; --muted:#4B5A68; --faint:#8D96A0;
+  --accent:#332FD1; --accent-deep:#2620A8; --accent-soft:#E9E8FB;
+  --yellow:#FFC700; --yellow-deep:#E0AE00;
+  --ok:#0E7A56; --ok-fill:#0E9A6C; --ok-soft:#DEF3EA;
+  --warn:#B8460B; --warn-fill:#FF6A1F; --warn-soft:#FFE6D8;
+  --bad:#C8002F; --bad-fill:#F2003C; --bad-soft:#FCE1E7;
+  --idle:#8D96A0;
+  --f-display:"Cairo","Inter",system-ui,sans-serif;
+  --f-body:"Inter","Cairo",system-ui,-apple-system,"Segoe UI",sans-serif;
   --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
-  --r:10px;
+  --r:16px;
+  color-scheme:light;
 }
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
-  --bg:#0F151B; --surface:#17202A; --sunk:#1E2934; --line:#2B3946;
-  --fg:#E6ECF1; --muted:#97A5B2; --accent:#7EA2F5; --accent-soft:#1D2C4D;
-  --ok:#5CC98F; --ok-soft:#173A2A; --warn:#F0B35A; --warn-soft:#3D2C12;
-  --bad:#F28B7F; --bad-soft:#43201C; --idle:#6B7884; color-scheme:dark}}
-:root[data-theme="dark"]{
-  --bg:#0F151B; --surface:#17202A; --sunk:#1E2934; --line:#2B3946;
-  --fg:#E6ECF1; --muted:#97A5B2; --accent:#7EA2F5; --accent-soft:#1D2C4D;
-  --ok:#5CC98F; --ok-soft:#173A2A; --warn:#F0B35A; --warn-soft:#3D2C12;
-  --bad:#F28B7F; --bad-soft:#43201C; --idle:#6B7884; color-scheme:dark}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.5}
 .wrap{max-width:1280px;margin:0 auto;padding-inline:16px;padding-block:0 48px}
@@ -137,3 +133,64 @@ a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
 .fact{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}
 .fact .lab{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .panel.hit{border-color:var(--accent)}
+
+/* ---------- Science Street skin ---------- */
+body{background-color:var(--bg);background-image:radial-gradient(var(--line) 1px,transparent 1px);background-size:22px 22px;-webkit-font-smoothing:antialiased}
+header.top{background:var(--bg);border-bottom:0}
+.top-in{padding-block:14px 0}
+.brandrow{background:var(--accent);border:3px solid var(--ink);border-radius:16px;padding:12px 18px;box-shadow:0 4px 0 var(--ink);position:relative}
+.brandrow::before,.brandrow::after{content:"";position:absolute;top:8px;width:9px;height:9px;border-radius:50%;background:var(--bg);border:2px solid var(--ink)}
+.brandrow::before{left:8px}.brandrow::after{right:8px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo-chip{background:#fff;border:2px solid var(--ink);border-radius:12px;padding:4px 8px;flex:none;display:flex;align-items:center;box-shadow:0 2px 0 var(--ink)}
+.logo-chip img{height:38px;width:auto;display:block}
+h1{font-family:var(--f-display);font-weight:800;font-size:22px;color:var(--yellow);letter-spacing:.01em;line-height:1.15}
+h1 small,.brand-sub{display:block;font-family:var(--f-display);font-weight:700;font-size:11px;color:#fff;letter-spacing:.06em;text-transform:uppercase;margin:2px 0 0}
+.brandrow .sync{color:#fff}
+.brandrow .sync .link{color:#C9C6F7}
+.brandrow .sync .link:hover{color:#fff}
+.brandrow .dot{border:1.5px solid #fff}
+.gsearch input{background:#fff;border:2px solid var(--ink);border-radius:12px}
+nav.tabs{background:var(--surface);border:2px solid var(--ink);border-radius:12px;padding:4px;gap:4px}
+nav.tabs button{flex:1 0 auto;font:800 13px var(--f-display);letter-spacing:.02em;color:var(--muted);border:0;border-radius:9px;padding:8px 12px}
+nav.tabs button[aria-selected="true"]{background:var(--yellow);color:var(--ink)}
+nav.tabs button:hover:not([aria-selected="true"]){color:var(--ink)}
+.prio-bar{padding-block:10px 12px}
+.panel{border:2px solid var(--ink);border-radius:16px;padding:18px;box-shadow:0 3px 0 var(--line)}
+.panel h2{font-family:var(--f-display);font-weight:800;font-size:15px}
+.strip{background:var(--ink);border:2px solid var(--ink);gap:2px;border-radius:16px;box-shadow:0 3px 0 var(--line)}
+.kpi .lab{font-family:var(--f-display);font-weight:700}
+.kpi .val{font-weight:800;font-size:28px}
+.kpi.alert{background:var(--bad-soft)}
+input,select,textarea{background:var(--bg);border:2px solid var(--line);border-radius:9px;padding:8px 11px}
+input:focus-visible,select:focus-visible,textarea:focus-visible{border-color:var(--accent)}
+label.f{font:700 11px var(--f-display);letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
+button.btn{font:800 13px var(--f-display);letter-spacing:.02em;background:var(--accent);border:2px solid var(--ink);border-radius:10px;color:#fff;box-shadow:0 3px 0 var(--ink);padding:8px 16px}
+button.btn:active{transform:translateY(2px);box-shadow:0 1px 0 var(--ink)}
+button.btn.ghost{background:#fff;color:var(--ink)}
+.chips button,.prio-bar button{border:2px solid var(--line);font-family:var(--f-display);font-weight:700}
+.chips button[aria-pressed="true"],.prio-bar button[aria-pressed="true"]{background:var(--yellow);border-color:var(--ink);color:var(--ink)}
+.prio-bar button.p-bad[aria-pressed="true"]{background:var(--bad-fill);border-color:var(--ink);color:#fff}
+.prio-bar button.p-warn[aria-pressed="true"]{background:var(--warn-fill);border-color:var(--ink);color:var(--ink)}
+.pill{font-family:var(--f-display);font-weight:700}
+.track{height:12px;border-radius:6px;border:1.5px solid var(--ink);background:var(--sunk)}
+.track .s-done{background:var(--ok-fill)} .track .s-review{background:var(--warn-fill)} .track .s-wip{background:var(--accent)}
+.legend span::before{border:1.5px solid var(--ink)}
+.cal .day{border:1.5px solid var(--line);border-radius:9px}
+.cal .day.today{border-color:var(--ink);box-shadow:inset 0 0 0 2px var(--yellow)}
+.cal .ev.k-flag{background:var(--bad-soft);color:var(--bad)}
+.cal .ev.k-publish{background:var(--ok-soft);color:var(--ok)}
+.cal .ev.k-custom{background:var(--warn-soft);color:var(--warn)}
+.lk{border:2px solid var(--line);border-radius:12px}
+.lk:hover{border-color:var(--ink)}
+.timer{background:var(--accent-soft);border:2px solid var(--ink);border-radius:12px}
+.timer .clock{font-family:var(--f-display);font-weight:800;font-size:28px;color:var(--accent)}
+th{font-family:var(--f-display);font-weight:700}
+.star[aria-pressed="true"]{color:var(--yellow-deep)}
+.panel.hit{border-color:var(--accent);box-shadow:0 4px 0 var(--accent)}
+.gate h1{color:var(--ink);font-size:28px}
+.gate .logo-chip img{height:64px}
+.notice{border:2px dashed var(--line);border-radius:12px}
+@media (max-width:640px){.brandrow{padding:12px 14px}.logo-chip img{height:30px}h1{font-size:18px}}
+.brandrow .who,.brandrow #whoText{color:#fff}
+.brandrow .sync{flex-wrap:wrap}

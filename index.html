@@ -5,15 +5,18 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Shareh Control Room</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta name="theme-color" content="#332FD1">
 <link rel="stylesheet" href="styles.css">
 <style>html,body{margin:0}</style>
 </head>
 <body>
 
 <!-- Sign-in gate -->
-<div class="gate" id="loading"><h1>Shareh Control Room</h1><p class="meta">Loading…</p></div>
+<div class="gate" id="loading"><span class="logo-chip"><img src="logo.png" alt="شارع العلوم"></span><h1>Shareh Control Room</h1><p class="meta">Loading…</p></div>
 <div class="gate" id="gate" hidden>
+  <span class="logo-chip"><img src="logo.png" alt="شارع العلوم"></span>
   <h1>Shareh Control Room</h1>
   <p class="meta" id="gateMsg">Sign in with your Google account to open the team dashboard.</p>
   <button class="btn" type="button" id="signInBtn">Sign in with Google</button>
@@ -24,7 +27,7 @@
 <header class="top">
   <div class="top-in">
     <div class="brandrow">
-      <h1>Shareh Control Room <small>MED · 26/27</small></h1>
+      <div class="brand"><span class="logo-chip"><img src="logo.png" alt="شارع العلوم"></span><div><h1>Shareh Control Room</h1><span class="brand-sub">Science Street · MED 26/27</span></div></div>
       <label class="gsearch"><span class="sr">Search</span><input id="globalSearch" type="search" autocomplete="off" placeholder="Search episode, unit, editor… e.g. G2-U1-L03, G05 U3, Rana"></label>
       <div class="sync"><span class="dot" id="syncDot"></span><span id="syncText">Connecting…</span>
         <span class="who"><span id="whoText"></span><button class="link" type="button" id="signOutBtn">Sign out</button></span></div>

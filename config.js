@@ -7,6 +7,6 @@ export const FIREBASE_CONFIG = {
   messagingSenderId: "853710294813",
   appId: "1:853710294813:web:2441d172d0aa334d569bf4"
 };
-// These accounts always have lead access and can add everyone else in the Team tab.
-export const OWNER_EMAILS = ["adham.youssry@sciencestreets.com", "adhmgold@gmail.com"];
+// This account always has lead access and can add everyone else in the Team tab.
+export const OWNER_EMAIL = "adhmgold@gmail.com";
 export const SS_TRACKER_URL = "https://adhmgold.github.io/Editor-tracker/";
