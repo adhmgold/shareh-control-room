@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Shareh Control Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+<style>html,body{margin:0}</style>
+</head>
+<body>
+
+<!-- Sign-in gate -->
+<div class="gate" id="loading"><h1>Shareh Control Room</h1><p class="meta">Loading…</p></div>
+<div class="gate" id="gate" hidden>
+  <h1>Shareh Control Room</h1>
+  <p class="meta" id="gateMsg">Sign in with your Google account to open the team dashboard.</p>
+  <button class="btn" type="button" id="signInBtn">Sign in with Google</button>
+  <button class="btn ghost" type="button" id="gateOut" hidden>Use another account</button>
+</div>
+
+<div id="app" hidden>
+<header class="top">
+  <div class="top-in">
+    <div class="brandrow">
+      <h1>Shareh Control Room <small>MED · 26/27</small></h1>
+      <label class="gsearch"><span class="sr">Search</span><input id="globalSearch" type="search" autocomplete="off" placeholder="Search episode, unit, editor… e.g. G2-U1-L03, G05 U3, Rana"></label>
+      <div class="sync"><span class="dot" id="syncDot"></span><span id="syncText">Connecting…</span>
+        <span class="who"><span id="whoText"></span><button class="link" type="button" id="signOutBtn">Sign out</button></span></div>
+    </div>
+    <nav class="tabs" role="tablist" id="tabs">
+      <button role="tab" data-v="overview" aria-selected="true">Overview</button>
+      <button role="tab" data-v="projects" aria-selected="false">Projects</button>
+      <button role="tab" data-v="deadlines" aria-selected="false">Deadlines</button>
+      <button role="tab" data-v="links" aria-selected="false">Links</button>
+      <button role="tab" data-v="mywork" aria-selected="false" id="myTab">My work</button>
+      <button role="tab" data-v="team" aria-selected="false" id="teamTab" hidden>Team</button>
+    </nav>
+    <div class="prio-bar" id="prioBar"></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="view" id="v-search"><div class="grid" id="searchResults"></div></section>
+
+  <section class="view on" id="v-overview">
+    <div class="strip">
+      <div class="kpi"><div class="lab">Episodes done</div><div class="val" id="k-done">—</div><div class="sub" id="k-done-s">waiting for sheets</div></div>
+      <div class="kpi"><div class="lab">Due in 14 days</div><div class="val" id="k-due">—</div><div class="sub">deliveries &amp; deadlines</div></div>
+      <div class="kpi" id="k-late-box"><div class="lab">Overdue</div><div class="val" id="k-late">—</div><div class="sub" id="k-late-s">click to filter</div></div>
+      <div class="kpi"><div class="lab">Editing now</div><div class="val" id="k-now">—</div><div class="sub" id="k-now-s">SS Tracker timers</div></div>
+    </div>
+    <div class="grid" style="margin-top:16px">
+      <div class="panel span5"><h2>Next deadlines <span class="aside">Timeline, calendar &amp; team</span></h2><ul class="list" id="ov-deadlines"></ul></div>
+      <div class="panel span7"><h2>Project progress <span class="aside">Master tracker tabs</span></h2>
+        <div class="legend"><span style="--c:var(--ok)">Done</span><span style="--c:var(--warn)">In review</span><span style="--c:var(--accent)">In edit</span><span style="--c:var(--sunk)">Not started</span></div>
+        <div class="bars" id="ov-projects"></div></div>
+      <div class="panel span7"><h2>Editor workload <span class="aside">open episodes · finished</span></h2><div class="bars" id="ov-editors"></div></div>
+      <div class="panel span5"><h2>Working right now <span class="aside">live from SS Tracker</span></h2><ul class="list" id="ov-now"></ul></div>
+      <div class="panel span12"><h2>Publishing pipeline <span class="aside">Main page calendar</span></h2><div class="tscroll" id="ov-publish"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-projects">
+    <div class="chips" id="projChips"></div>
+    <div class="chips" id="statusChips"></div>
+    <div class="grid">
+      <div class="panel span12"><h2 id="projTitle">Episodes</h2>
+        <label class="f" style="max-width:320px;margin-bottom:10px">Search episode, editor or status<input id="projSearch" type="search" placeholder="e.g. G2-U1 or Rana"></label>
+        <div class="tscroll"><table id="projTable"><thead id="projHead"></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel span6"><h2>Re-shoot flags</h2><div id="reshoots"></div></div>
+      <div class="panel span6"><h2>Open by editor</h2><div class="bars" id="proj-editors"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-deadlines">
+    <div class="grid">
+      <div class="panel span8">
+        <div class="cal-head"><button class="btn ghost" type="button" id="calPrev">‹ Prev</button><b id="calLabel"></b><button class="btn ghost" type="button" id="calNext">Next ›</button></div>
+        <div class="chips" id="kindChips"></div>
+        <div class="legend"><span style="--c:var(--accent)">Delivery</span><span style="--c:var(--bad)">Red flag</span><span style="--c:var(--ok)">Publishing</span><span style="--c:var(--warn)">Team deadline</span></div>
+        <div class="cal" id="cal"></div>
+      </div>
+      <div class="panel span4"><h2>Add a deadline</h2>
+        <form id="dlForm" class="inline">
+          <label class="f" style="flex-basis:100%">What's due<input id="dlTitle" required maxlength="120" placeholder="G05 Unit 4 final renders"></label>
+          <label class="f">Date<input id="dlDate" type="date" required></label>
+          <label class="f">Project<input id="dlProject" list="projList" maxlength="60" placeholder="Tracker G05"></label>
+          <label class="f" style="flex:0 1 110px">Priority<select id="dlPrio"><option value="normal">Normal</option><option value="high">High</option></select></label>
+          <button class="btn" type="submit" id="dlSubmit">Add deadline</button>
+        </form>
+        <p class="meta" id="dlMsg"></p>
+        <h2 style="margin-top:16px">All upcoming</h2><ul class="list" id="dl-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-links">
+    <div class="grid">
+      <div class="panel span12"><h2>Link hub <span class="aside">sheets, scripts, Frame.io and team links</span></h2>
+        <form id="lkForm" class="inline" style="margin-bottom:14px">
+          <label class="f">Title<input id="lkTitle" required maxlength="100" placeholder="G06 Unit 3 Drive folder"></label>
+          <label class="f">Link<input id="lkUrl" type="url" required placeholder="https://"></label>
+          <label class="f">Group<input id="lkGroup" list="groupList" maxlength="40" placeholder="Drive"></label>
+          <button class="btn" type="submit">Add link</button>
+        </form>
+        <datalist id="groupList"><option>Sheets</option><option>Scripts</option><option>Drive</option><option>Frame.io</option><option>YouTube</option></datalist>
+        <label class="f" style="max-width:320px;margin-bottom:10px">Search links<input id="lkSearch" type="search" placeholder="Script, Drive, Frame.io…"></label>
+        <div class="chips" id="lkChips"></div>
+        <div class="linkgrid" id="links"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="v-mywork">
+    <div class="grid">
+      <div class="panel span12" id="noNamePanel" hidden><div class="notice">Your account isn't linked to an SS Tracker name yet. Ask Gold to set your name in the Team tab.</div></div>
+      <div class="panel span7"><h2>My hours this week <span class="aside" id="meName"></span></h2><div class="bars" id="myWeek"></div>
+        <p class="meta" style="margin-top:12px">Log your work in <a href="https://adhmgold.github.io/Editor-tracker/" target="_blank" rel="noopener">SS Tracker</a>. It shows up here instantly.</p></div>
+      <div class="panel span5"><h2>My timer</h2><div id="myTimer"></div></div>
+      <div class="panel span12"><h2>My open episodes <span class="aside">from the Master tracker</span></h2><div class="tscroll" id="myEps"></div></div>
+      <div class="panel span12"><h2>My entries <span class="aside">last 30 days</span></h2><div class="tscroll" id="myHist"></div></div>
+    </div>
+  </section>
+
+  <section class="view" id="v-team">
+    <div class="grid">
+      <div class="panel span12"><h2>Team hours <span class="aside">hours logged in SS Tracker, last 7 days</span></h2><div class="tscroll" id="teamTable"></div></div>
+      <div class="panel span12"><h2>Entries</h2>
+        <label class="f" style="max-width:260px;margin-bottom:10px">Editor<select id="teamPick"></select></label>
+        <div class="tscroll" id="teamEntries"></div></div>
+      <div class="panel span12"><h2>Who can open the dashboard</h2>
+        <form id="roleForm" class="inline" style="margin-bottom:12px">
+          <label class="f">Google email<input id="roleEmail" type="email" required placeholder="name@gmail.com"></label>
+          <label class="f">SS Tracker name<input id="roleName" list="rosterList" required maxlength="40" placeholder="Rana"></label>
+          <label class="f" style="flex:0 1 160px">Access<select id="roleRole"><option value="editor">Editor (own work only)</option><option value="lead">Lead (sees everyone)</option></select></label>
+          <button class="btn" type="submit">Save person</button>
+        </form>
+        <p class="meta" id="roleMsg"></p>
+        <div class="tscroll" id="roleTable"></div>
+      </div>
+    </div>
+  </section>
+
+  <datalist id="projList"></datalist>
+  <datalist id="rosterList"></datalist>
+</main>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
