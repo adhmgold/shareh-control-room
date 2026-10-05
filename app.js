@@ -27,7 +27,8 @@ const S = {
   raw: {}, rawAt: {}, projects: [], episodes: [], reshoots: [], timeline: [], publish: { tabs: [], items: [] }, sheetLinks: [],
   links: [], deadlines: [], takes: [], entries: [], roles: [],
   projFilter: "all", lkFilter: "All", calMonth: null,
-  prio: "all", statusFilter: "open", kindFilter: "all", flags: {}
+  prio: "all", statusFilter: "open", kindFilter: "all", flags: {},
+  kpiSettings: null, kpiMonth: null, kpiOpen: null, kpiMine: {}, pauseReviews: {}, prFilter: { status: "pending", editor: "" }
 };
 const unsubs = [];
 
@@ -393,7 +394,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); renderOverview(); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); renderOverview(); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -479,6 +480,211 @@ function episodeCard(e, logged) {
     (pub.length ? fact("Publishing", pub.map(p => esc(p.tab) + " · " + (p.date ? fmtDay(p.date) : "no date") + " · " + esc(p.state)).join("<br>")) : "") +
     "</div></div>";
 }
+/* ---------- KPI (monthly, per editor, from SS Tracker takes) ----------
+   Output 35%      distinct video+stage passes this month vs the team median (median = 70 pts)
+   Speed 25%       hours per video for each stage vs the team median for that stage (equal = 70 pts, capped at 100)
+   Focus 20%       share of time paused (excused reasons don't count) and pauses per take
+   Consistency 20% active days out of working days, and hours per active day vs target
+   Weights, target hours, working days and excused pause keywords are editable by leads (dash_settings/kpi). */
+const KPI_DEFAULTS = {
+  weights: { output: 35, speed: 25, focus: 20, consistency: 20 },
+  targetHours: 6, workdays: [6, 0, 1, 2, 3, 4], minTakes: 3,
+  excused: "render, rendering, export, exporting, upload, رندر, ريندر, تصدير, اكسبورت, review, feedback, waiting, wait, مراجعة, مراجعه, فيدباك, كومنت, استنى, انتظار, meeting, meet, call, ميتنج, اجتماع, pray, prayer, salah, صلاة, صلاه, الصلاة, الصلاه"
+};
+const PART_LABEL = { output: "Output", speed: "Speed", focus: "Focus", consistency: "Consistency" };
+const clamp = (v, a = 0, b = 100) => Math.max(a, Math.min(b, v));
+const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const monthOf = d => String(d || "").slice(0, 7);
+const curMonth = () => today().slice(0, 7);
+function monthLabel(m) { const [y, mo] = m.split("-").map(Number); return ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][mo - 1] + " " + y; }
+function prevMonth(m) { const [y, mo] = m.split("-").map(Number); const d = new Date(y, mo - 2, 1); return d.getFullYear() + "-" + pad(d.getMonth() + 1); }
+function kpiCfg() { const s = S.kpiSettings || {}; return { ...KPI_DEFAULTS, ...s, weights: { ...KPI_DEFAULTS.weights, ...(s.weights || {}) } }; }
+function workdaysIn(month) {
+  const cfg = kpiCfg(); const [y, mo] = month.split("-").map(Number); const t = today(); let n = 0;
+  for (let d = new Date(y, mo - 1, 1); d.getMonth() === mo - 1; d.setDate(d.getDate() + 1)) { const k = ymd(d); if (k > t) break; if (cfg.workdays.includes(d.getDay())) n++; }
+  return Math.max(1, n);
+}
+function excusedWords() { return kpiCfg().excused.split(",").map(w => w.trim().toLowerCase()).filter(Boolean); }
+function isExcused(reason, words) { const r = String(reason || "").toLowerCase(); return !!r && words.some(w => r.includes(w)); }
+function computeKpi(month, entries) {
+  const cfg = kpiCfg(), words = excusedWords();
+  const ms = entries.filter(e => e.editor && monthOf(e.date) === month);
+  const pairs = {};
+  ms.forEach(e => { const k = e.editor + "|" + compact(e.video) + "|" + (e.stage || "—"); pairs[k] = (pairs[k] || 0) + entryHours(e); });
+  const byStage = {};
+  Object.entries(pairs).forEach(([k, h]) => { const st = k.split("|")[2]; if (h >= 0.25) (byStage[st] = byStage[st] || []).push(h); });
+  const bench = {}; Object.keys(byStage).forEach(st => { bench[st] = median(byStage[st]); });
+  const wd = workdaysIn(month);
+  const groups = {}; ms.forEach(e => { (groups[e.editor] = groups[e.editor] || []).push(e); });
+  const rows = Object.entries(groups).map(([name, list]) => {
+    const myPairs = Object.entries(pairs).filter(([k]) => k.split("|")[0] === name).map(([k, h]) => ({ video: k.split("|")[1], stage: k.split("|")[2], h }));
+    const videos = new Set(myPairs.map(p => p.video)).size;
+    const hours = list.reduce((a, e) => a + entryHours(e), 0);
+    const ratios = myPairs.filter(p => p.h >= 0.25 && bench[p.stage]).map(p => bench[p.stage] / p.h);
+    let cP = 0, eP = 0, cMin = 0, eMin = 0; const reasons = {};
+    list.forEach(e => {
+      const ps = Array.isArray(e.pauses) ? e.pauses : [];
+      if (ps.length) ps.forEach((p, i) => {
+        const m = (p.durationMs || 0) / 60000, dec = S.pauseReviews[pauseKey(e, i)];
+        const ex = dec ? dec.decision === "accept" : isExcused(p.reason, words);
+        const label = (p.reason || "no reason given").trim().slice(0, 40) + (dec ? (dec.decision === "accept" ? " (accepted)" : " (rejected)") : "");
+        reasons[label] = reasons[label] || { n: 0, min: 0, ex }; reasons[label].n++; reasons[label].min += m;
+        if (ex) { eP++; eMin += m; } else { cP++; cMin += m; }
+      });
+      else if (e.pauseCount) { cP += e.pauseCount; cMin += e.pausedMinutes || 0; reasons["no reason given"] = reasons["no reason given"] || { n: 0, min: 0, ex: false }; reasons["no reason given"].n += e.pauseCount; reasons["no reason given"].min += e.pausedMinutes || 0; }
+    });
+    const daily = {}; list.forEach(e => { const d = daily[e.date] = daily[e.date] || { takes: 0, hours: 0 }; d.takes++; d.hours += entryHours(e); });
+    const activeDays = Object.keys(daily).length;
+    const stageRows = {}; myPairs.forEach(p => { const s = stageRows[p.stage] = stageRows[p.stage] || { videos: 0, hrs: [] }; s.videos++; s.hrs.push(p.h); });
+    return {
+      name, takes: list.length, videos, passes: myPairs.length, hours, speedRatio: median(ratios),
+      countedPauses: cP, excusedPauses: eP, countedMin: cMin, excusedMin: eMin, activeDays, wd,
+      takesPerDay: activeDays ? list.length / activeDays : 0, hoursPerDay: activeDays ? hours / activeDays : 0,
+      daily, reasons, stages: Object.entries(stageRows).map(([st, s]) => ({ stage: st, videos: s.videos, mine: median(s.hrs), team: bench[st] || null }))
+    };
+  });
+  const medPasses = median(rows.filter(r => r.takes >= cfg.minTakes).map(r => r.passes)) || 1;
+  const W = cfg.weights;
+  rows.forEach(r => {
+    r.enough = r.takes >= cfg.minTakes;
+    const share = r.countedMin / Math.max(1, r.hours * 60 + r.countedMin);
+    r.parts = {
+      output: clamp(70 * r.passes / medPasses),
+      speed: r.speedRatio == null ? null : clamp(70 * r.speedRatio),
+      focus: clamp(100 - 250 * share - 5 * Math.max(0, r.countedPauses / Math.max(1, r.takes) - 2)),
+      consistency: 0.6 * Math.min(100, 100 * r.activeDays / r.wd) + 0.4 * Math.min(100, 100 * r.hoursPerDay / cfg.targetHours)
+    };
+    let sum = 0, wsum = 0; Object.keys(W).forEach(k => { if (r.parts[k] != null) { sum += r.parts[k] * (+W[k] || 0); wsum += (+W[k] || 0); } });
+    r.score = wsum ? sum / wsum : 0;
+  });
+  rows.sort((a, b) => (b.enough - a.enough) || (b.score - a.score));
+  return { month, wd, medPasses, rows };
+}
+const scoreCls = v => v >= 80 ? "ok" : v >= 60 ? "acc" : v >= 40 ? "warn" : "bad";
+const r0 = v => v == null ? "—" : Math.round(v);
+function sparkline(vals) {
+  const pts = vals.map((v, i) => v == null ? null : [i * 14 + 2, 30 - (v / 100) * 26]).filter(Boolean);
+  if (!pts.length) return "";
+  return "<svg class=\"spark\" viewBox=\"0 0 " + ((vals.length - 1) * 14 + 4) + " 32\" width=\"" + ((vals.length - 1) * 14 + 4) + "\" height=\"32\" aria-hidden=\"true\"><polyline points=\"" + pts.map(p => p.join(",")).join(" ") + "\" fill=\"none\" stroke=\"var(--accent)\" stroke-width=\"2\"/>" + "<circle cx=\"" + pts[pts.length - 1][0] + "\" cy=\"" + pts[pts.length - 1][1] + "\" r=\"3\" fill=\"var(--accent)\"/></svg>";
+}
+function partCell(v) { return v == null ? "<td class=\"n meta\">—</td>" : "<td class=\"n\"><span class=\"pill " + scoreCls(v) + "\">" + r0(v) + "</span></td>"; }
+function kpiCard(r, prev) {
+  const d = prev && prev.enough ? r.score - prev.score : null;
+  return "<div class=\"kpi-card\"><div class=\"kpi-big\"><span class=\"lab\">KPI score</span><span class=\"val " + scoreCls(r.score) + "\">" + r0(r.score) + "</span>" + (d == null ? "" : "<span class=\"meta\">" + (d >= 0 ? "▲ " : "▼ ") + Math.abs(Math.round(d)) + " vs last month</span>") + (r.enough ? "" : "<span class=\"meta\">Not enough takes yet this month</span>") + "</div>" +
+    "<div class=\"facts\">" + Object.keys(PART_LABEL).map(k => fact(PART_LABEL[k] + " · " + kpiCfg().weights[k] + "%", r.parts[k] == null ? "—" : "<span class=\"pill " + scoreCls(r.parts[k]) + "\">" + r0(r.parts[k]) + "</span>")).join("") +
+    fact("Videos / stage passes", r.videos + " videos · " + r.passes + " passes") + fact("Hours logged", fmtH(r.hours)) +
+    fact("Pauses", r.countedPauses + " counted (" + Math.round(r.countedMin) + " min) · " + r.excusedPauses + " excused (" + Math.round(r.excusedMin) + " min)") +
+    fact("Active days", r.activeDays + " of " + r.wd + " working days") + fact("Takes per day", r.takesPerDay.toFixed(1)) + fact("Hours per active day", fmtH(r.hoursPerDay)) + "</div></div>";
+}
+function kpiDetail(r) {
+  const days = Object.keys(r.daily).sort();
+  const [y, mo] = S.kpiMonth.split("-").map(Number); const all = []; for (let d = new Date(y, mo - 1, 1); d.getMonth() === mo - 1; d.setDate(d.getDate() + 1)) all.push(ymd(d));
+  const mx = Math.max(1, ...days.map(k => r.daily[k].hours));
+  const bw = 16, H = 90;
+  const bars = all.map((k, i) => { const v = r.daily[k]; const h = v ? Math.max(2, (v.hours / mx) * (H - 20)) : 0; return (v ? "<rect x=\"" + (i * bw + 2) + "\" y=\"" + (H - 14 - h) + "\" width=\"" + (bw - 4) + "\" height=\"" + h + "\" rx=\"2\" fill=\"var(--accent)\"><title>" + fmtDay(k) + ": " + v.takes + " takes · " + fmtH(v.hours) + "</title></rect><text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 16 - h) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + v.takes + "</text>" : "") + ((i + 1) % 5 === 0 || i === 0 ? "<text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 2) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + (i + 1) + "</text>" : ""); }).join("");
+  const reasons = Object.entries(r.reasons).sort((a, b) => b[1].min - a[1].min).slice(0, 10);
+  return "<h2>" + esc(r.name) + " · " + esc(monthLabel(S.kpiMonth)) + "</h2>" +
+    "<h3 class=\"sub-h\">Hours and takes per day <span class=\"meta\">(number above each bar = takes)</span></h3><div class=\"tscroll\"><svg viewBox=\"0 0 " + (all.length * bw + 4) + " " + H + "\" width=\"" + (all.length * bw + 4) + "\" height=\"" + H + "\" role=\"img\" aria-label=\"Hours per day\">" + bars + "</svg></div>" +
+    "<h3 class=\"sub-h\">Speed by stage</h3><div class=\"tscroll\"><table><thead><tr><th>Stage</th><th style=\"text-align:end\">Videos</th><th style=\"text-align:end\">Their hours / video</th><th style=\"text-align:end\">Team median</th><th style=\"text-align:end\">Difference</th></tr></thead><tbody>" +
+    r.stages.map(s => { const diff = s.mine && s.team ? Math.round(100 * (s.mine - s.team) / s.team) : null; return "<tr><td>" + esc(s.stage) + "</td><td class=\"n\">" + s.videos + "</td><td class=\"n\">" + (s.mine ? fmtH(s.mine) : "—") + "</td><td class=\"n\">" + (s.team ? fmtH(s.team) : "—") + "</td><td class=\"n\">" + (diff == null ? "—" : "<span class=\"pill " + (diff <= 0 ? "ok" : diff <= 25 ? "warn" : "bad") + "\">" + (diff > 0 ? "+" : "") + diff + "%</span>") + "</td></tr>"; }).join("") + "</tbody></table></div>" +
+    "<h3 class=\"sub-h\">Pause reasons</h3>" + (reasons.length ? "<ul class=\"list\">" + reasons.map(([k, v]) => "<li><span class=\"grow\" dir=\"auto\">" + esc(k) + " " + (v.ex ? "<span class=\"pill ok\">excused</span>" : "") + "</span><span class=\"meta\">" + v.n + "× · " + Math.round(v.min) + " min</span></li>").join("") + "</ul>" : "<p class=\"empty\">No pauses this month.</p>");
+}
+function kpiMonths() { const out = []; const d = new Date(); d.setDate(1); for (let i = 0; i < 12; i++) { out.push(d.getFullYear() + "-" + pad(d.getMonth() + 1)); d.setMonth(d.getMonth() - 1); } return out; }
+function renderKpi() {
+  if (!S.kpiMonth) S.kpiMonth = curMonth();
+  const sel = $("#kpiMonth"); if (!sel.options.length || sel.dataset.m !== kpiMonths()[0]) { sel.innerHTML = kpiMonths().map(m => "<option value=\"" + m + "\">" + monthLabel(m) + (m === curMonth() ? " (so far)" : "") + "</option>").join(""); sel.dataset.m = kpiMonths()[0]; }
+  sel.value = S.kpiMonth;
+  const cfg = kpiCfg();
+  $("#kpiHow").innerHTML = "<h2>How the score works</h2><div class=\"facts\">" +
+    fact("Output · " + cfg.weights.output + "%", "Different videos and stages worked on this month, compared with the team's middle editor. Matching the middle scores 70.") +
+    fact("Speed · " + cfg.weights.speed + "%", "Hours per video for each stage, compared with the team's median for that same stage. Matching it scores 70; faster scores more, up to 100.") +
+    fact("Focus · " + cfg.weights.focus + "%", "How much of the working time was paused, and pauses per take. Pauses for render, review, meetings and prayer don't count.") +
+    fact("Consistency · " + cfg.weights.consistency + "%", "Days with logged work out of working days, and hours per active day against a " + cfg.targetHours + "h target.") +
+    "</div><p class=\"meta\">Scores come from the time logged in SS Tracker. Current month updates live; past months are saved when the month ends.</p>";
+  if (S.isLead) {
+    const res = computeKpi(S.kpiMonth, S.entries);
+    const prev = computeKpi(prevMonth(S.kpiMonth), S.entries);
+    const trendMonths = []; { let m = S.kpiMonth; for (let i = 0; i < 6; i++) { trendMonths.unshift(m); m = prevMonth(m); } }
+    const trend = {}; trendMonths.forEach(m => { computeKpi(m, S.entries).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.enough ? r.score : null; }); });
+    $("#kpiAsOf").textContent = res.rows.length + " editors · " + res.wd + " working days" + (S.kpiMonth === curMonth() ? " so far" : "");
+    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">Score</th><th style=\"text-align:end\">Output</th><th style=\"text-align:end\">Speed</th><th style=\"text-align:end\">Focus</th><th style=\"text-align:end\">Consist.</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Videos</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Days</th><th style=\"text-align:end\">Takes/day</th><th>6 months</th></tr></thead><tbody>" +
+      res.rows.map((r, i) => { const p = prev.rows.find(x => x.name === r.name); const d = p && p.enough && r.enough ? Math.round(r.score - p.score) : null;
+        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b>" + (r.enough ? "" : " <span class=\"meta\">few takes</span>") + "</td><td class=\"n\"><span class=\"score " + scoreCls(r.score) + "\">" + r0(r.score) + "</span></td>" + ["output", "speed", "focus", "consistency"].map(k => partCell(r.parts[k])).join("") +
+          "<td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + r.videos + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.activeDays + "/" + r.wd + "</td><td class=\"n\">" + r.takesPerDay.toFixed(1) + "</td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
+      "</tbody></table></div><p class=\"meta\">Click an editor for the day-by-day breakdown. Pauses: counted <span class=\"meta\">+ excused</span>.</p>" : "<p class=\"empty\">No SS Tracker entries in " + esc(monthLabel(S.kpiMonth)) + ".</p>";
+    const open = res.rows.find(r => r.name === S.kpiOpen);
+    $("#kpiDetail").hidden = !open; $("#kpiDetail").innerHTML = open ? kpiCard(open, prev.rows.find(x => x.name === open.name)) + kpiDetail(open) : "";
+    $("#kpiSettingsPanel").hidden = false; fillKpiSettings();
+    saveKpiSnapshots(res);
+  } else {
+    $("#kpiSettingsPanel").hidden = true;
+    const row = S.kpiMine[S.kpiMonth], prev = S.kpiMine[prevMonth(S.kpiMonth)];
+    $("#kpiAsOf").textContent = row && row.savedAt ? "updated " + new Date(row.savedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+    $("#kpiBody").innerHTML = !S.myName ? "<p class=\"empty\">Your account isn't linked to an SS Tracker name yet.</p>" : row ? kpiCard(row, prev) : "<p class=\"empty\">No KPI for " + esc(monthLabel(S.kpiMonth)) + " yet. It appears once you've logged takes and a lead has opened the dashboard.</p>";
+    $("#kpiDetail").hidden = !row; $("#kpiDetail").innerHTML = row ? kpiDetail(row) : "";
+  }
+}
+function fillKpiSettings() {
+  const f = $("#kpiSettingsForm"); if (f.dataset.filled === JSON.stringify(S.kpiSettings || {})) return;
+  const c = kpiCfg();
+  ["output", "speed", "focus", "consistency"].forEach(k => { $("#kw-" + k).value = c.weights[k]; });
+  $("#kTarget").value = c.targetHours; $("#kMin").value = c.minTakes; $("#kExcused").value = c.excused;
+  document.querySelectorAll("#kDays input").forEach(cb => { cb.checked = c.workdays.includes(+cb.value); });
+  f.dataset.filled = JSON.stringify(S.kpiSettings || {});
+}
+/* Leads' browsers save each editor's row so editors can see their own score (rules: an editor reads only their own row). */
+const kpiWritten = {};
+let kpiSaveTimer = null;
+function saveKpiSnapshots(res) {
+  clearTimeout(kpiSaveTimer);
+  kpiSaveTimer = setTimeout(() => {
+    const months = [res.month, prevMonth(res.month)];
+    months.forEach(m => {
+      const r = m === res.month ? res : computeKpi(m, S.entries);
+      r.rows.forEach(row => {
+        const data = { ...row, month: m, final: m < curMonth() };
+        const sig = JSON.stringify(data);
+        const key = m + "/" + row.name;
+        if (kpiWritten[key] === sig) return;
+        kpiWritten[key] = sig;
+        setDoc(doc(db, "dash_kpi", m, "editors", row.name), { ...data, savedAt: Date.now() }).catch(() => { delete kpiWritten[key]; });
+      });
+    });
+  }, 4000);
+}
+
+/* ---------- pause review: leads accept (doesn't count) or reject (counts) each pause ---------- */
+const pauseKey = (e, i) => String(e.id || (e.editor + "_" + e.loggedAt)).replace(/[\/]/g, "_") + "_" + i;
+function allPauses(month) {
+  const words = excusedWords(), out = [];
+  S.entries.filter(e => monthOf(e.date) === month && Array.isArray(e.pauses)).forEach(e => e.pauses.forEach((p, i) => {
+    const key = pauseKey(e, i), dec = S.pauseReviews[key];
+    out.push({ key, editor: e.editor, video: e.video, stage: e.stage, date: e.date, reason: p.reason || "", min: (p.durationMs || 0) / 60000, at: p.pausedAt, auto: isExcused(p.reason, words), dec: dec ? dec.decision : null, by: dec ? dec.by : "" });
+  }));
+  return out.sort((a, b) => String(b.at || b.date).localeCompare(String(a.at || a.date)));
+}
+function renderPauseReview() {
+  const panel = $("#pauseReview"); if (!S.isLead) { panel.hidden = true; return; } panel.hidden = false;
+  const all = allPauses(S.kpiMonth);
+  const f = S.prFilter;
+  const eds = [...new Set(all.map(p => p.editor))].sort();
+  const cnt = st => all.filter(p => st === "all" ? true : st === "pending" ? !p.dec : p.dec === st).length;
+  $("#prStatus").innerHTML = [["pending", "To review"], ["accept", "Accepted"], ["reject", "Rejected"], ["all", "All"]].map(([k, l]) => "<button type=\"button\" data-pr=\"" + k + "\" aria-pressed=\"" + (f.status === k) + "\">" + l + " <b>" + cnt(k) + "</b></button>").join("");
+  const pick = $("#prEditor"); const cur = f.editor; pick.innerHTML = "<option value=\"\">All editors</option>" + eds.map(n => "<option>" + esc(n) + "</option>").join(""); pick.value = eds.includes(cur) ? cur : "";
+  let rows = all.filter(p => (!f.editor || p.editor === f.editor) && (f.status === "all" || (f.status === "pending" ? !p.dec : p.dec === f.status)));
+  if (f.status === "pending") rows.sort((a, b) => b.min - a.min);
+  $("#prBulk").hidden = f.status !== "pending" || !rows.length;
+  $("#prList").innerHTML = rows.length ? "<div class=\"tscroll\"><table><thead><tr><th>Day</th><th>Editor</th><th>Episode</th><th>Stage</th><th>Reason</th><th style=\"text-align:end\">Length</th><th>Status</th><th></th></tr></thead><tbody>" + rows.slice(0, 300).map(p =>
+    "<tr><td class=\"code\">" + fmtDay(p.date) + "</td><td>" + esc(p.editor) + "</td><td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.stage || "") + "</td><td dir=\"auto\">" + (p.reason ? esc(p.reason) : "<span class=\"meta\">no reason given</span>") + "</td><td class=\"n\">" + Math.round(p.min) + " min</td><td>" +
+    (p.dec === "accept" ? "<span class=\"pill ok\">Accepted</span>" : p.dec === "reject" ? "<span class=\"pill bad\">Rejected</span>" : "<span class=\"pill\">Not reviewed · " + (p.auto ? "excused for now" : "counts for now") + "</span>") +
+    "</td><td class=\"pr-actions\"><button class=\"btn small ok\" type=\"button\" data-pr-set=\"accept\" data-key=\"" + esc(p.key) + "\"" + (p.dec === "accept" ? " disabled" : "") + ">Accept</button><button class=\"btn small no\" type=\"button\" data-pr-set=\"reject\" data-key=\"" + esc(p.key) + "\"" + (p.dec === "reject" ? " disabled" : "") + ">Reject</button>" + (p.dec ? "<button class=\"link\" type=\"button\" data-pr-set=\"clear\" data-key=\"" + esc(p.key) + "\">Undo</button>" : "") + "</td></tr>").join("") + "</tbody></table></div>" + (rows.length > 300 ? "<p class=\"meta\">Showing the first 300.</p>" : "")
+    : "<p class=\"empty\">" + (f.status === "pending" ? "Nothing left to review for " + esc(monthLabel(S.kpiMonth)) + "." : "No pauses match.") + "</p>";
+}
+function setPauseDecision(key, decision) {
+  if (decision === "clear") return deleteDoc(doc(db, "dash_pause_reviews", key)).catch(() => { });
+  return setDoc(doc(db, "dash_pause_reviews", key), { decision, by: S.email, at: Date.now() }).catch(() => { });
+}
+
 /* ---------- UI events ---------- */
 function showTab(v) { document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button[data-v]"); if (b) { $("#globalSearch").value = ""; renderSearch(); showTab(b.dataset.v); } });
@@ -503,6 +709,34 @@ $("#lkChips").addEventListener("click", e => { const b = e.target.closest("[data
 $("#calPrev").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() - 1, 1); renderDeadlines(); });
 $("#calNext").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() + 1, 1); renderDeadlines(); });
 $("#teamPick").addEventListener("change", renderTeam);
+$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); renderKpi(); renderPauseReview(); });
+$("#kpiBody").addEventListener("click", e => { const tr = e.target.closest("[data-kpi]"); if (tr) { S.kpiOpen = S.kpiOpen === tr.dataset.kpi ? null : tr.dataset.kpi; renderKpi(); if (S.kpiOpen) $("#kpiDetail").scrollIntoView({ behavior: "smooth", block: "start" }); } });
+$("#prStatus").addEventListener("click", e => { const b = e.target.closest("[data-pr]"); if (b) { S.prFilter.status = b.dataset.pr; renderPauseReview(); } });
+$("#prEditor").addEventListener("change", e => { S.prFilter.editor = e.target.value; renderPauseReview(); });
+$("#prList").addEventListener("click", e => { const b = e.target.closest("[data-pr-set]"); if (b) { b.disabled = true; setPauseDecision(b.dataset.key, b.dataset.prSet); } });
+$("#prBulk").addEventListener("click", async e => {
+  const b = e.target.closest("[data-bulk]"); if (!b) return;
+  const pend = allPauses(S.kpiMonth).filter(p => !p.dec && (!S.prFilter.editor || p.editor === S.prFilter.editor));
+  const pick = b.dataset.bulk === "accept-suggested" ? pend.filter(p => p.auto) : pend.filter(p => !p.auto);
+  const dec = b.dataset.bulk === "accept-suggested" ? "accept" : "reject";
+  b.disabled = true; b.textContent = "Saving " + pick.length + "…";
+  for (const p of pick) await setPauseDecision(p.key, dec);
+  b.disabled = false; renderPauseReview();
+});
+$("#kpiSettingsForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const w = {}; ["output", "speed", "focus", "consistency"].forEach(k => { w[k] = Math.max(0, +$("#kw-" + k).value || 0); });
+  const data = { weights: w, targetHours: Math.max(1, +$("#kTarget").value || 6), minTakes: Math.max(1, +$("#kMin").value || 3), excused: $("#kExcused").value, workdays: [...document.querySelectorAll("#kDays input:checked")].map(c => +c.value), by: S.email, at: Date.now() };
+  try { await setDoc(doc(db, "dash_settings", "kpi"), data); $("#kSaveMsg").textContent = "Saved. Scores updated."; } catch (err) { $("#kSaveMsg").textContent = "Couldn't save. Only leads can change KPI settings."; }
+});
+$("#kReset").addEventListener("click", () => { S.kpiSettings = { ...KPI_DEFAULTS }; $("#kpiSettingsForm").dataset.filled = ""; fillKpiSettings(); $("#kSaveMsg").textContent = "Defaults loaded. Click Save to apply."; });
+let myKpiUnsubs = [];
+function subscribeMyKpi() {
+  myKpiUnsubs.splice(0).forEach(u => { try { u(); } catch (e) { } });
+  if (S.isLead || !S.myName || !S.kpiMonth) return;
+  [S.kpiMonth, prevMonth(S.kpiMonth)].forEach(m => myKpiUnsubs.push(onSnapshot(doc(db, "dash_kpi", m, "editors", S.myName), snap => { S.kpiMine[m] = snap.exists() ? snap.data() : null; renderKpi(); }, () => { })));
+}
+
 setInterval(() => { renderOverview(); renderMyWork(); setSync(); }, 30000);
 
 function confirmIn(wrap, label, onYes) {
@@ -574,14 +808,18 @@ onAuthStateChanged(auth, async user => {
     try { const d = snap.data(); S.raw[k] = JSON.parse(d.payload); S.rawAt[k] = d.updatedAt && d.updatedAt.toMillis ? d.updatedAt.toMillis() : Date.now(); applySheets(); } catch (e) { console.warn("sheet parse", k, e); }
   }));
   live(collection(db, "dash_deadlines"), s => { S.deadlines = s.docs.map(d => ({ id: d.id, ...d.data() })); renderOverview(); renderDeadlines(); });
+  live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
   live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); renderOverview(); renderMyWork(); renderTeam(); renderSearch(); });
   if (S.isLead) {
-    live(collection(db, "entries"), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); renderTeam(); renderProjects(); });
+    live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
+    live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
   }
+  S.kpiMonth = S.kpiMonth || curMonth();
+  subscribeMyKpi();
   renderAll();
 });
