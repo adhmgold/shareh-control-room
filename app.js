@@ -340,7 +340,11 @@ function renderLinks() {
     ...Object.values(SHEETS).map(s => ({ title: s.title, url: "https://docs.google.com/spreadsheets/d/" + s.id + "/edit", group: "Sheets", src: "Built in" })),
     { title: "SS Tracker", url: SS_TRACKER_URL, group: "Tools", src: "Built in" }
   ];
-  const all = [...builtIn, ...S.sheetLinks, ...S.links.map(l => ({ ...l, src: "Team" }))];
+  const hidden = new Set(S.hiddenLinks || []);
+  const everything = [...builtIn, ...S.sheetLinks, ...S.links.map(l => ({ ...l, src: "Team" }))];
+  const all = everything.filter(l => S.showHiddenLinks ? hidden.has(l.url) : !hidden.has(l.url));
+  $("#lkHiddenToggle").hidden = !S.isLead || !hidden.size;
+  $("#lkHiddenToggle").textContent = S.showHiddenLinks ? "Back to all links" : "Show removed links (" + everything.filter(l => hidden.has(l.url)).length + ")";
   const groups = ["All", ...new Set(all.map(l => l.group || "Other"))];
   if (!groups.includes(S.lkFilter)) S.lkFilter = "All";
   $("#lkChips").innerHTML = groups.map(g => "<button type=\"button\" data-lk=\"" + esc(g) + "\" aria-pressed=\"" + (g === S.lkFilter) + "\">" + esc(g) + "</button>").join("");
@@ -348,7 +352,7 @@ function renderLinks() {
   const show = all.filter(l => (S.lkFilter === "All" || (l.group || "Other") === S.lkFilter) && (!q || (l.title + " " + l.url + " " + (l.group || "")).toLowerCase().includes(q)));
   $("#links").innerHTML = show.map(l => {
     let host = ""; try { host = new URL(l.url).hostname.replace(/^www\./, ""); } catch (e) { }
-    return "<div class=\"lk\"><a href=\"" + esc(l.url) + "\" target=\"_blank\" rel=\"noopener\" dir=\"auto\">" + esc(l.title) + "</a><div class=\"meta\"><span>" + esc(host) + " · " + esc(l.group || "Other") + "</span>" + (l.id ? "<span><button class=\"link\" data-lk-del=\"" + esc(l.id) + "\">Remove</button></span>" : "<span>" + esc(l.src) + "</span>") + "</div></div>";
+    return "<div class=\"lk\"><a href=\"" + esc(l.url) + "\" target=\"_blank\" rel=\"noopener\" dir=\"auto\">" + esc(l.title) + "</a><div class=\"meta\"><span>" + esc(host) + " · " + esc(l.group || "Other") + "</span>" + (S.showHiddenLinks ? "<span><button class=\"link\" data-lk-restore=\"" + esc(l.url) + "\">Restore</button></span>" : l.id ? "<span><button class=\"link\" data-lk-del=\"" + esc(l.id) + "\">Remove</button></span>" : S.isLead ? "<span><button class=\"link\" data-lk-hide=\"" + esc(l.url) + "\">Remove</button></span>" : "<span>" + esc(l.src) + "</span>") + "</div></div>";
   }).join("") || "<p class=\"empty\">No links match.</p>";
 }
 function last7() { const days = []; for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(ymd(d)); } return days; }
@@ -487,11 +491,11 @@ function episodeCard(e, logged) {
    Consistency 20% active days out of working days, and hours per active day vs target
    Weights, target hours, working days and excused pause keywords are editable by leads (dash_settings/kpi). */
 const KPI_DEFAULTS = {
-  weights: { output: 35, speed: 25, focus: 20, consistency: 20 },
+  weights: { deadlines: 30, output: 25, speed: 20, focus: 15, consistency: 10 },
   targetHours: 6, workdays: [6, 0, 1, 2, 3, 4], minTakes: 3,
   excused: "render, rendering, export, exporting, upload, رندر, ريندر, تصدير, اكسبورت, review, feedback, waiting, wait, مراجعة, مراجعه, فيدباك, كومنت, استنى, انتظار, meeting, meet, call, ميتنج, اجتماع, pray, prayer, salah, صلاة, صلاه, الصلاة, الصلاه"
 };
-const PART_LABEL = { output: "Output", speed: "Speed", focus: "Focus", consistency: "Consistency" };
+const PART_LABEL = { deadlines: "Deadlines", output: "Output", speed: "Speed", focus: "Focus", consistency: "Consistency" };
 const clamp = (v, a = 0, b = 100) => Math.max(a, Math.min(b, v));
 const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const monthOf = d => String(d || "").slice(0, 7);
@@ -545,12 +549,37 @@ function computeKpi(month, entries) {
       daily, reasons, stages: Object.entries(stageRows).map(([st, s]) => ({ stage: st, videos: s.videos, mine: median(s.hrs), team: bench[st] || null }))
     };
   });
+  // Deadlines: plan items finished this month (or still open past a deadline this month), scored early / on time / late.
+  const mStart = month + "-01", mEnd = month + "-31", todayK = today();
+  rows.forEach(r => {
+    const items = [];
+    (S.plans || []).filter(p => p.editor === r.name && p.deadline).forEach(p => {
+      const doneDay = (p.doneAt || "").slice(0, 10);
+      if (p.status === "done" && doneDay >= mStart && doneDay <= mEnd) {
+        let res, late = 0;
+        if (doneDay < p.deadline) res = "early";
+        else if (doneDay === p.deadline) {
+          const doneHM = p.doneAt ? new Date(p.doneAt).toTimeString().slice(0, 5) : "00:00";
+          res = p.deadlineTime && doneHM > p.deadlineTime ? "late" : "ontime";
+        } else { res = "late"; late = daysBetween(p.deadline, doneDay); }
+        items.push({ p, res, late, when: doneDay });
+      } else if (p.status !== "done" && p.deadline >= mStart && p.deadline <= mEnd && p.deadline < todayK) {
+        items.push({ p, res: "open", late: daysBetween(p.deadline, todayK < mEnd ? todayK : mEnd), when: "" });
+      }
+    });
+    const pts = items.map(x => x.res === "early" ? 100 : x.res === "ontime" ? 85 : Math.max(0, 60 - 15 * Math.max(1, x.late)));
+    r.deadlineItems = items.map(x => ({ video: x.p.video, stage: x.p.stage, deadline: x.p.deadline, deadlineTime: x.p.deadlineTime || "", priority: x.p.priority || "normal", done: x.when, res: x.res, late: x.late }));
+    r.early = items.filter(x => x.res === "early").length; r.ontime = items.filter(x => x.res === "ontime").length;
+    r.lateDone = items.filter(x => x.res === "late").length; r.openLate = items.filter(x => x.res === "open").length;
+    r.deadlineScore = pts.length ? pts.reduce((a, b) => a + b, 0) / pts.length : null;
+  });
   const medPasses = median(rows.filter(r => r.takes >= cfg.minTakes).map(r => r.passes)) || 1;
   const W = cfg.weights;
   rows.forEach(r => {
     r.enough = r.takes >= cfg.minTakes;
     const share = r.countedMin / Math.max(1, r.hours * 60 + r.countedMin);
     r.parts = {
+      deadlines: r.deadlineScore,
       output: clamp(70 * r.passes / medPasses),
       speed: r.speedRatio == null ? null : clamp(70 * r.speedRatio),
       focus: clamp(100 - 250 * share - 5 * Math.max(0, r.countedPauses / Math.max(1, r.takes) - 2) - 5 * (r.countedHolds || 0)),
@@ -574,6 +603,7 @@ function kpiCard(r, prev) {
   const d = prev && prev.enough ? r.score - prev.score : null;
   return "<div class=\"kpi-card\"><div class=\"kpi-big\"><span class=\"lab\">KPI score</span><span class=\"val " + scoreCls(r.score) + "\">" + r0(r.score) + "</span>" + (d == null ? "" : "<span class=\"meta\">" + (d >= 0 ? "▲ " : "▼ ") + Math.abs(Math.round(d)) + " vs last month</span>") + (r.enough ? "" : "<span class=\"meta\">Not enough takes yet this month</span>") + "</div>" +
     "<div class=\"facts\">" + Object.keys(PART_LABEL).map(k => fact(PART_LABEL[k] + " · " + kpiCfg().weights[k] + "%", r.parts[k] == null ? "—" : "<span class=\"pill " + scoreCls(r.parts[k]) + "\">" + r0(r.parts[k]) + "</span>")).join("") +
+    fact("Tasks vs deadline", (r.deadlineItems || []).length ? r.early + " early · " + r.ontime + " on time · " + r.lateDone + " late" + (r.openLate ? " · " + r.openLate + " still open past deadline" : "") : "No planned tasks this month") +
     fact("Videos / stage passes", r.videos + " videos · " + r.passes + " passes") + fact("Hours logged", fmtH(r.hours)) +
     fact("Pauses", r.countedPauses + " counted (" + Math.round(r.countedMin) + " min) · " + r.excusedPauses + " excused (" + Math.round(r.excusedMin) + " min)") +
     fact("Holds", (r.countedHolds || 0) + " counted · " + (r.excusedHolds || 0) + " excused") +
@@ -588,6 +618,7 @@ function kpiDetail(r) {
   const reasons = Object.entries(r.reasons).sort((a, b) => b[1].min - a[1].min).slice(0, 10);
   return "<h2>" + esc(r.name) + " · " + esc(monthLabel(S.kpiMonth)) + "</h2>" +
     "<h3 class=\"sub-h\">Hours and takes per day <span class=\"meta\">(number above each bar = takes)</span></h3><div class=\"tscroll\"><svg viewBox=\"0 0 " + (all.length * bw + 4) + " " + H + "\" width=\"" + (all.length * bw + 4) + "\" height=\"" + H + "\" role=\"img\" aria-label=\"Hours per day\">" + bars + "</svg></div>" +
+    "<h3 class=\"sub-h\">Tasks and deadlines</h3>" + ((r.deadlineItems || []).length ? "<div class=\"tscroll\"><table><thead><tr><th>Episode</th><th>Stage</th><th>Priority</th><th>Deadline</th><th>Finished</th><th>Result</th></tr></thead><tbody>" + r.deadlineItems.slice().sort((a, b) => a.deadline.localeCompare(b.deadline)).map(x => "<tr><td class=\"code\">" + esc(x.video) + "</td><td>" + esc(x.stage || "") + "</td><td>" + esc(x.priority) + "</td><td class=\"code\">" + fmtDay(x.deadline) + (x.deadlineTime ? " " + esc(x.deadlineTime) : "") + "</td><td class=\"code\">" + (x.done ? fmtDay(x.done) : "—") + "</td><td>" + ({ early: "<span class=\"pill ok\">Early</span>", ontime: "<span class=\"pill acc\">On time</span>", late: "<span class=\"pill bad\">Late " + x.late + "d</span>", open: "<span class=\"pill bad\">Not done · " + x.late + "d late</span>" }[x.res]) + "</td></tr>").join("") + "</tbody></table></div>" : "<p class=\"empty\">No tasks from Today's plan this month.</p>") +
     "<h3 class=\"sub-h\">Speed by stage</h3><div class=\"tscroll\"><table><thead><tr><th>Stage</th><th style=\"text-align:end\">Videos</th><th style=\"text-align:end\">Their hours / video</th><th style=\"text-align:end\">Team median</th><th style=\"text-align:end\">Difference</th></tr></thead><tbody>" +
     r.stages.map(s => { const diff = s.mine && s.team ? Math.round(100 * (s.mine - s.team) / s.team) : null; return "<tr><td>" + esc(s.stage) + "</td><td class=\"n\">" + s.videos + "</td><td class=\"n\">" + (s.mine ? fmtH(s.mine) : "—") + "</td><td class=\"n\">" + (s.team ? fmtH(s.team) : "—") + "</td><td class=\"n\">" + (diff == null ? "—" : "<span class=\"pill " + (diff <= 0 ? "ok" : diff <= 25 ? "warn" : "bad") + "\">" + (diff > 0 ? "+" : "") + diff + "%</span>") + "</td></tr>"; }).join("") + "</tbody></table></div>" +
     "<h3 class=\"sub-h\">Pause reasons</h3>" + (reasons.length ? "<ul class=\"list\">" + reasons.map(([k, v]) => "<li><span class=\"grow\" dir=\"auto\">" + esc(k) + " " + (v.ex ? "<span class=\"pill ok\">excused</span>" : "") + "</span><span class=\"meta\">" + v.n + "× · " + Math.round(v.min) + " min</span></li>").join("") + "</ul>" : "<p class=\"empty\">No pauses this month.</p>");
@@ -599,6 +630,7 @@ function renderKpi() {
   sel.value = S.kpiMonth;
   const cfg = kpiCfg();
   $("#kpiHow").innerHTML = "<h2>How the score works</h2><div class=\"facts\">" +
+    fact("Deadlines · " + cfg.weights.deadlines + "%", "Each task from Today's plan finished this month: before the deadline day = 100, on the deadline day = 85, late = 45 after 1 day, 30 after 2, 15 after 3, 0 after that. Tasks still open past their deadline count as late. Editors with no planned tasks are scored on the other parts.") +
     fact("Output · " + cfg.weights.output + "%", "Different videos and stages worked on this month, compared with the team's middle editor. Matching the middle scores 70.") +
     fact("Speed · " + cfg.weights.speed + "%", "Hours per video for each stage, compared with the team's median for that same stage. Matching it scores 70; faster scores more, up to 100.") +
     fact("Focus · " + cfg.weights.focus + "%", "How much of the working time was paused, and pauses per take. Pauses for render, review, meetings and prayer don't count.") +
@@ -610,10 +642,10 @@ function renderKpi() {
     const trendMonths = []; { let m = S.kpiMonth; for (let i = 0; i < 6; i++) { trendMonths.unshift(m); m = prevMonth(m); } }
     const trend = {}; trendMonths.forEach(m => { computeKpi(m, S.entries).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.enough ? r.score : null; }); });
     $("#kpiAsOf").textContent = res.rows.length + " editors · " + res.wd + " working days" + (S.kpiMonth === curMonth() ? " so far" : "");
-    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">Score</th><th style=\"text-align:end\">Output</th><th style=\"text-align:end\">Speed</th><th style=\"text-align:end\">Focus</th><th style=\"text-align:end\">Consist.</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Videos</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Days</th><th style=\"text-align:end\">Takes/day</th><th>6 months</th></tr></thead><tbody>" +
+    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">Score</th><th style=\"text-align:end\">Deadlines</th><th style=\"text-align:end\">Output</th><th style=\"text-align:end\">Speed</th><th style=\"text-align:end\">Focus</th><th style=\"text-align:end\">Consist.</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Early · on time · late</th><th style=\"text-align:end\">Videos</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Days</th><th style=\"text-align:end\">Takes/day</th><th>6 months</th></tr></thead><tbody>" +
       res.rows.map((r, i) => { const p = prev.rows.find(x => x.name === r.name); const d = p && p.enough && r.enough ? Math.round(r.score - p.score) : null;
-        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b>" + (r.enough ? "" : " <span class=\"meta\">few takes</span>") + "</td><td class=\"n\"><span class=\"score " + scoreCls(r.score) + "\">" + r0(r.score) + "</span></td>" + ["output", "speed", "focus", "consistency"].map(k => partCell(r.parts[k])).join("") +
-          "<td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + r.videos + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.activeDays + "/" + r.wd + "</td><td class=\"n\">" + r.takesPerDay.toFixed(1) + "</td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
+        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b>" + (r.enough ? "" : " <span class=\"meta\">few takes</span>") + "</td><td class=\"n\"><span class=\"score " + scoreCls(r.score) + "\">" + r0(r.score) + "</span></td>" + ["deadlines", "output", "speed", "focus", "consistency"].map(k => partCell(r.parts[k])).join("") +
+          "<td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + ((r.deadlineItems || []).length ? "<span class=\"up\">" + r.early + "</span> · " + r.ontime + " · <span class=\"down\">" + (r.lateDone + r.openLate) + "</span>" : "·") + "</td><td class=\"n\">" + r.videos + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.activeDays + "/" + r.wd + "</td><td class=\"n\">" + r.takesPerDay.toFixed(1) + "</td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
       "</tbody></table></div><p class=\"meta\">Click an editor for the day-by-day breakdown. Pauses: counted <span class=\"meta\">+ excused</span>.</p>" : "<p class=\"empty\">No SS Tracker entries in " + esc(monthLabel(S.kpiMonth)) + ".</p>";
     const open = res.rows.find(r => r.name === S.kpiOpen);
     $("#kpiDetail").hidden = !open; $("#kpiDetail").innerHTML = open ? kpiCard(open, prev.rows.find(x => x.name === open.name)) + kpiDetail(open) : "";
@@ -630,7 +662,7 @@ function renderKpi() {
 function fillKpiSettings() {
   const f = $("#kpiSettingsForm"); if (f.dataset.filled === JSON.stringify(S.kpiSettings || {})) return;
   const c = kpiCfg();
-  ["output", "speed", "focus", "consistency"].forEach(k => { $("#kw-" + k).value = c.weights[k]; });
+  ["deadlines", "output", "speed", "focus", "consistency"].forEach(k => { $("#kw-" + k).value = c.weights[k]; });
   $("#kTarget").value = c.targetHours; $("#kMin").value = c.minTakes; $("#kExcused").value = c.excused;
   document.querySelectorAll("#kDays input").forEach(cb => { cb.checked = c.workdays.includes(+cb.value); });
   f.dataset.filled = JSON.stringify(S.kpiSettings || {});
@@ -769,7 +801,7 @@ $("#prBulk").addEventListener("click", async e => {
 });
 $("#kpiSettingsForm").addEventListener("submit", async e => {
   e.preventDefault();
-  const w = {}; ["output", "speed", "focus", "consistency"].forEach(k => { w[k] = Math.max(0, +$("#kw-" + k).value || 0); });
+  const w = {}; ["deadlines", "output", "speed", "focus", "consistency"].forEach(k => { w[k] = Math.max(0, +$("#kw-" + k).value || 0); });
   const data = { weights: w, targetHours: Math.max(1, +$("#kTarget").value || 6), minTakes: Math.max(1, +$("#kMin").value || 3), excused: $("#kExcused").value, workdays: [...document.querySelectorAll("#kDays input:checked")].map(c => +c.value), by: S.email, at: Date.now() };
   try { await setDoc(doc(db, "dash_settings", "kpi"), data); $("#kSaveMsg").textContent = "Saved. Scores updated."; } catch (err) { $("#kSaveMsg").textContent = "Couldn't save. Only leads can change KPI settings."; }
 });
@@ -794,6 +826,9 @@ document.addEventListener("click", async e => {
   if (t.dataset.flag) { const k = normCode(t.dataset.flag); const on = !!S.flags[k]; (on ? deleteDoc(doc(db, "dash_flags", k)) : setDoc(doc(db, "dash_flags", k), { code: t.dataset.flag, by: S.email, at: Date.now() })).catch(() => { }); }
   if (t.dataset.dlPrio) { const d = S.deadlines.find(x => x.id === t.dataset.dlPrio); if (d) updateDoc(doc(db, "dash_deadlines", d.id), { priority: d.priority === "high" ? "normal" : "high" }).catch(() => { }); }
   if (t.dataset.dlDel) { const id = t.dataset.dlDel; confirmIn(t.parentElement, "Delete?", () => deleteDoc(doc(db, "dash_deadlines", id)).catch(() => { })); }
+  if (t.dataset.lkHide) { const u = t.dataset.lkHide; confirmIn(t.parentElement, "Remove?", () => setDoc(doc(db, "dash_settings", "links"), { hidden: [...new Set([...(S.hiddenLinks || []), u])] }, { merge: true }).catch(() => { })); }
+  if (t.dataset.lkRestore) { const u = t.dataset.lkRestore; setDoc(doc(db, "dash_settings", "links"), { hidden: (S.hiddenLinks || []).filter(x => x !== u) }, { merge: true }).catch(() => { }); }
+  if (t.id === "lkHiddenToggle") { S.showHiddenLinks = !S.showHiddenLinks; renderLinks(); }
   if (t.dataset.lkDel) { const id = t.dataset.lkDel; confirmIn(t.parentElement, "Remove?", () => deleteDoc(doc(db, "dash_links", id)).catch(() => { })); }
   if (t.dataset.roleDel) { const id = t.dataset.roleDel; confirmIn(t.parentElement, "Remove access?", () => deleteDoc(doc(db, "dash_roles", id)).catch(() => { })); }
 });
@@ -852,6 +887,7 @@ onAuthStateChanged(auth, async user => {
     try { const d = snap.data(); S.raw[k] = JSON.parse(d.payload); S.rawAt[k] = d.updatedAt && d.updatedAt.toMillis ? d.updatedAt.toMillis() : Date.now(); applySheets(); } catch (e) { console.warn("sheet parse", k, e); }
   }));
   live(collection(db, "dash_deadlines"), s => { S.deadlines = s.docs.map(d => ({ id: d.id, ...d.data() })); renderOverview(); renderDeadlines(); });
+  live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
@@ -859,7 +895,7 @@ onAuthStateChanged(auth, async user => {
   if (S.isLead) {
     live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
-    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); });
+    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); renderKpi(); });
     live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });

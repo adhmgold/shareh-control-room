@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=6">
+<link rel="stylesheet" href="styles.css?v=7">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -113,6 +113,7 @@
         <datalist id="groupList"><option>Sheets</option><option>Scripts</option><option>Drive</option><option>Frame.io</option><option>YouTube</option></datalist>
         <label class="f" style="max-width:320px;margin-bottom:10px">Search links<input id="lkSearch" type="search" placeholder="Script, Drive, Frame.io…"></label>
         <div class="chips" id="lkChips"></div>
+        <button class="link" type="button" id="lkHiddenToggle" hidden></button>
         <div class="linkgrid" id="links"></div>
       </div>
     </div>
@@ -144,6 +145,7 @@
       <div class="panel span12" id="kpiHow"></div>
       <div class="panel span12" id="kpiSettingsPanel" hidden><h2>KPI settings <span class="aside">leads only</span></h2>
         <form id="kpiSettingsForm" class="inline">
+          <label class="f" style="flex:0 1 110px">Deadlines %<input id="kw-deadlines" type="number" min="0" max="100"></label>
           <label class="f" style="flex:0 1 110px">Output %<input id="kw-output" type="number" min="0" max="100"></label>
           <label class="f" style="flex:0 1 110px">Speed %<input id="kw-speed" type="number" min="0" max="100"></label>
           <label class="f" style="flex:0 1 110px">Focus %<input id="kw-focus" type="number" min="0" max="100"></label>
@@ -183,6 +185,6 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=6"></script>
+<script type="module" src="app.js?v=7"></script>
 </body>
 </html>
