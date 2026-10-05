@@ -28,7 +28,7 @@ const S = {
   links: [], deadlines: [], takes: [], entries: [], roles: [],
   projFilter: "all", lkFilter: "All", calMonth: null,
   prio: "all", statusFilter: "open", kindFilter: "all", flags: {},
-  kpiSettings: null, kpiMonth: null, kpiOpen: null, kpiMine: {}, pauseReviews: {}, prFilter: { status: "pending", editor: "" }
+  kpiSettings: null, kpiMonth: null, kpiOpen: null, kpiMine: {}, plans: [], pauseReviews: {}, prFilter: { status: "pending", editor: "" }
 };
 const unsubs = [];
 
@@ -394,7 +394,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); renderOverview(); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); renderOverview(); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderPlans(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -533,12 +533,14 @@ function computeKpi(month, entries) {
       });
       else if (e.pauseCount) { cP += e.pauseCount; cMin += e.pausedMinutes || 0; reasons["no reason given"] = reasons["no reason given"] || { n: 0, min: 0, ex: false }; reasons["no reason given"].n += e.pauseCount; reasons["no reason given"].min += e.pausedMinutes || 0; }
     });
+    let hC = 0, hE = 0;
+    list.filter(e => e.held).forEach(e => { const dec = S.pauseReviews[holdKey(e)]; const ex = dec ? dec.decision === "accept" : isExcused(e.holdReason, words); if (ex) hE++; else hC++; const label = "HOLD: " + (e.holdReason || "no reason given").trim().slice(0, 34) + (dec ? (dec.decision === "accept" ? " (accepted)" : " (rejected)") : ""); reasons[label] = reasons[label] || { n: 0, min: 0, ex }; reasons[label].n++; });
     const daily = {}; list.forEach(e => { const d = daily[e.date] = daily[e.date] || { takes: 0, hours: 0 }; d.takes++; d.hours += entryHours(e); });
     const activeDays = Object.keys(daily).length;
     const stageRows = {}; myPairs.forEach(p => { const s = stageRows[p.stage] = stageRows[p.stage] || { videos: 0, hrs: [] }; s.videos++; s.hrs.push(p.h); });
     return {
       name, takes: list.length, videos, passes: myPairs.length, hours, speedRatio: median(ratios),
-      countedPauses: cP, excusedPauses: eP, countedMin: cMin, excusedMin: eMin, activeDays, wd,
+      countedPauses: cP, excusedPauses: eP, countedHolds: hC, excusedHolds: hE, countedMin: cMin, excusedMin: eMin, activeDays, wd,
       takesPerDay: activeDays ? list.length / activeDays : 0, hoursPerDay: activeDays ? hours / activeDays : 0,
       daily, reasons, stages: Object.entries(stageRows).map(([st, s]) => ({ stage: st, videos: s.videos, mine: median(s.hrs), team: bench[st] || null }))
     };
@@ -551,7 +553,7 @@ function computeKpi(month, entries) {
     r.parts = {
       output: clamp(70 * r.passes / medPasses),
       speed: r.speedRatio == null ? null : clamp(70 * r.speedRatio),
-      focus: clamp(100 - 250 * share - 5 * Math.max(0, r.countedPauses / Math.max(1, r.takes) - 2)),
+      focus: clamp(100 - 250 * share - 5 * Math.max(0, r.countedPauses / Math.max(1, r.takes) - 2) - 5 * (r.countedHolds || 0)),
       consistency: 0.6 * Math.min(100, 100 * r.activeDays / r.wd) + 0.4 * Math.min(100, 100 * r.hoursPerDay / cfg.targetHours)
     };
     let sum = 0, wsum = 0; Object.keys(W).forEach(k => { if (r.parts[k] != null) { sum += r.parts[k] * (+W[k] || 0); wsum += (+W[k] || 0); } });
@@ -574,6 +576,7 @@ function kpiCard(r, prev) {
     "<div class=\"facts\">" + Object.keys(PART_LABEL).map(k => fact(PART_LABEL[k] + " · " + kpiCfg().weights[k] + "%", r.parts[k] == null ? "—" : "<span class=\"pill " + scoreCls(r.parts[k]) + "\">" + r0(r.parts[k]) + "</span>")).join("") +
     fact("Videos / stage passes", r.videos + " videos · " + r.passes + " passes") + fact("Hours logged", fmtH(r.hours)) +
     fact("Pauses", r.countedPauses + " counted (" + Math.round(r.countedMin) + " min) · " + r.excusedPauses + " excused (" + Math.round(r.excusedMin) + " min)") +
+    fact("Holds", (r.countedHolds || 0) + " counted · " + (r.excusedHolds || 0) + " excused") +
     fact("Active days", r.activeDays + " of " + r.wd + " working days") + fact("Takes per day", r.takesPerDay.toFixed(1)) + fact("Hours per active day", fmtH(r.hoursPerDay)) + "</div></div>";
 }
 function kpiDetail(r) {
@@ -654,6 +657,7 @@ function saveKpiSnapshots(res) {
 }
 
 /* ---------- pause review: leads accept (doesn't count) or reject (counts) each pause ---------- */
+const holdKey = e => "hold_" + String(e.id || (e.editor + "_" + e.loggedAt)).replace(/[\/]/g, "_");
 const pauseKey = (e, i) => String(e.id || (e.editor + "_" + e.loggedAt)).replace(/[\/]/g, "_") + "_" + i;
 function allPauses(month) {
   const words = excusedWords(), out = [];
@@ -661,6 +665,10 @@ function allPauses(month) {
     const key = pauseKey(e, i), dec = S.pauseReviews[key];
     out.push({ key, editor: e.editor, video: e.video, stage: e.stage, date: e.date, reason: p.reason || "", min: (p.durationMs || 0) / 60000, at: p.pausedAt, auto: isExcused(p.reason, words), dec: dec ? dec.decision : null, by: dec ? dec.by : "" });
   }));
+  S.entries.filter(e => monthOf(e.date) === month && e.held).forEach(e => {
+    const key = holdKey(e), dec = S.pauseReviews[key];
+    out.push({ key, type: "Hold", editor: e.editor, video: e.video, stage: e.stage, date: e.date, reason: e.holdReason || "", min: null, at: e.loggedAt, auto: isExcused(e.holdReason, words), dec: dec ? dec.decision : null, by: dec ? dec.by : "" });
+  });
   return out.sort((a, b) => String(b.at || b.date).localeCompare(String(a.at || a.date)));
 }
 function renderPauseReview() {
@@ -672,10 +680,10 @@ function renderPauseReview() {
   $("#prStatus").innerHTML = [["pending", "To review"], ["accept", "Accepted"], ["reject", "Rejected"], ["all", "All"]].map(([k, l]) => "<button type=\"button\" data-pr=\"" + k + "\" aria-pressed=\"" + (f.status === k) + "\">" + l + " <b>" + cnt(k) + "</b></button>").join("");
   const pick = $("#prEditor"); const cur = f.editor; pick.innerHTML = "<option value=\"\">All editors</option>" + eds.map(n => "<option>" + esc(n) + "</option>").join(""); pick.value = eds.includes(cur) ? cur : "";
   let rows = all.filter(p => (!f.editor || p.editor === f.editor) && (f.status === "all" || (f.status === "pending" ? !p.dec : p.dec === f.status)));
-  if (f.status === "pending") rows.sort((a, b) => b.min - a.min);
+  if (f.status === "pending") rows.sort((a, b) => (b.min ?? 999) - (a.min ?? 999));
   $("#prBulk").hidden = f.status !== "pending" || !rows.length;
-  $("#prList").innerHTML = rows.length ? "<div class=\"tscroll\"><table><thead><tr><th>Day</th><th>Editor</th><th>Episode</th><th>Stage</th><th>Reason</th><th style=\"text-align:end\">Length</th><th>Status</th><th></th></tr></thead><tbody>" + rows.slice(0, 300).map(p =>
-    "<tr><td class=\"code\">" + fmtDay(p.date) + "</td><td>" + esc(p.editor) + "</td><td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.stage || "") + "</td><td dir=\"auto\">" + (p.reason ? esc(p.reason) : "<span class=\"meta\">no reason given</span>") + "</td><td class=\"n\">" + Math.round(p.min) + " min</td><td>" +
+  $("#prList").innerHTML = rows.length ? "<div class=\"tscroll\"><table><thead><tr><th>Day</th><th>Type</th><th>Editor</th><th>Episode</th><th>Stage</th><th>Reason</th><th style=\"text-align:end\">Length</th><th>Status</th><th></th></tr></thead><tbody>" + rows.slice(0, 300).map(p =>
+    "<tr><td class=\"code\">" + fmtDay(p.date) + "</td><td>" + (p.type === "Hold" ? "<span class=\"pill warn\">Hold</span>" : "<span class=\"pill\">Pause</span>") + "</td><td>" + esc(p.editor) + "</td><td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.stage || "") + "</td><td dir=\"auto\">" + (p.reason ? esc(p.reason) : "<span class=\"meta\">no reason given</span>") + "</td><td class=\"n\">" + (p.min == null ? "—" : Math.round(p.min) + " min") + "</td><td>" +
     (p.dec === "accept" ? "<span class=\"pill ok\">Accepted</span>" : p.dec === "reject" ? "<span class=\"pill bad\">Rejected</span>" : "<span class=\"pill\">Not reviewed · " + (p.auto ? "excused for now" : "counts for now") + "</span>") +
     "</td><td class=\"pr-actions\"><button class=\"btn small ok\" type=\"button\" data-pr-set=\"accept\" data-key=\"" + esc(p.key) + "\"" + (p.dec === "accept" ? " disabled" : "") + ">Accept</button><button class=\"btn small no\" type=\"button\" data-pr-set=\"reject\" data-key=\"" + esc(p.key) + "\"" + (p.dec === "reject" ? " disabled" : "") + ">Reject</button>" + (p.dec ? "<button class=\"link\" type=\"button\" data-pr-set=\"clear\" data-key=\"" + esc(p.key) + "\">Undo</button>" : "") + "</td></tr>").join("") + "</tbody></table></div>" + (rows.length > 300 ? "<p class=\"meta\">Showing the first 300.</p>" : "")
     : "<p class=\"empty\">" + (f.status === "pending" ? "Nothing left to review for " + esc(monthLabel(S.kpiMonth)) + "." : "No pauses match.") + "</p>";
@@ -683,6 +691,41 @@ function renderPauseReview() {
 function setPauseDecision(key, decision) {
   if (decision === "clear") return deleteDoc(doc(db, "dash_pause_reviews", key)).catch(() => { });
   return setDoc(doc(db, "dash_pause_reviews", key), { decision, by: S.email, at: Date.now() }).catch(() => { });
+}
+
+
+/* ---------- daily plans (written by SS Tracker: plans/{id}) ---------- */
+const PLAN_PRIO = { high: 0, normal: 1, low: 2 }, PLAN_ST = { doing: 0, todo: 1, held: 2, done: 3 };
+function planDue(p) {
+  const t = today(); if (!p.deadline) return { late: false, label: "no deadline", cls: "" };
+  const n = daysBetween(t, p.deadline); const now = new Date(), hm = pad(now.getHours()) + ":" + pad(now.getMinutes());
+  const late = p.status !== "done" && (n < 0 || (n === 0 && p.deadlineTime && hm > p.deadlineTime));
+  return { late, n, label: (late ? "overdue · " : "") + fmtDay(p.deadline) + (p.deadlineTime ? " " + p.deadlineTime : ""), cls: late ? "late" : n === 0 ? "soon" : "" };
+}
+function todaysPlans(list) { const t = today(); return list.filter(p => p.status !== "done" || (p.doneAt || "").slice(0, 10) === t); }
+function planRow(p, withEditor) {
+  const d = planDue(p);
+  const st = { doing: "<span class=\"pill acc\">In progress</span>", todo: "<span class=\"pill\">Planned</span>", held: "<span class=\"pill warn\">On hold</span>", done: "<span class=\"pill ok\">Done</span>" }[p.status] || "";
+  const prio = "<span class=\"pill " + (p.priority === "high" ? "bad" : p.priority === "low" ? "" : "warn") + "\">" + esc(p.priority || "normal") + "</span>";
+  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + "</td></tr>";
+}
+function planTable(list, withEditor) {
+  if (!list.length) return "<p class=\"empty\">No plan yet. Editors add their episodes in SS Tracker under “Today's plan”.</p>";
+  const rows = list.slice().sort((a, b) => (PLAN_ST[a.status] - PLAN_ST[b.status]) || ((PLAN_PRIO[a.priority] ?? 1) - (PLAN_PRIO[b.priority] ?? 1)) || String(a.deadline || "9").localeCompare(String(b.deadline || "9")));
+  return "<div class=\"tscroll\"><table><thead><tr><th>Priority</th>" + (withEditor ? "<th>Editor</th>" : "") + "<th>Episode</th><th>Project · stage</th><th>Deadline</th><th>Status</th></tr></thead><tbody>" + rows.map(p => planRow(p, withEditor)).join("") + "</tbody></table></div>";
+}
+function renderPlans() {
+  const mine = S.myName ? todaysPlans(S.plans.filter(p => p.editor === S.myName)) : [];
+  $("#myPlan").innerHTML = S.myName ? planTable(mine, false) : "";
+  if (!S.isLead) return;
+  const all = todaysPlans(S.plans);
+  const eds = [...new Set(all.map(p => p.editor))].sort();
+  $("#teamPlanSummary").innerHTML = eds.length ? "<div class=\"tscroll\"><table><thead><tr><th>Editor</th><th style=\"text-align:end\">Planned</th><th style=\"text-align:end\">In progress</th><th style=\"text-align:end\">Done today</th><th style=\"text-align:end\">Overdue</th><th style=\"text-align:end\">Added mid-day</th><th style=\"text-align:end\">On hold</th></tr></thead><tbody>" + eds.map(n => {
+    const l = all.filter(p => p.editor === n), c = f => l.filter(f).length;
+    return "<tr class=\"clickable\" data-plan-ed=\"" + esc(n) + "\"><td><b>" + esc(n) + "</b></td><td class=\"n\">" + l.length + "</td><td class=\"n\">" + c(p => p.status === "doing") + "</td><td class=\"n\">" + c(p => p.status === "done") + "</td><td class=\"n\">" + (c(p => planDue(p).late) ? "<span class=\"pill bad\">" + c(p => planDue(p).late) + "</span>" : "·") + "</td><td class=\"n\">" + (c(p => p.midDay) || "·") + "</td><td class=\"n\">" + (c(p => p.status === "held") || "·") + "</td></tr>";
+  }).join("") + "</tbody></table></div>" : "<p class=\"empty\">No editor has a plan for today yet.</p>";
+  const sel = S.planEd && eds.includes(S.planEd) ? S.planEd : "";
+  $("#teamPlanList").innerHTML = "<h3 class=\"sub-h\">" + (sel ? esc(sel) + "'s plan" : "All plans") + (sel ? " <button class=\"link\" type=\"button\" data-plan-ed=\"\">show everyone</button>" : "") + "</h3>" + planTable(all.filter(p => !sel || p.editor === sel), !sel);
 }
 
 /* ---------- UI events ---------- */
@@ -709,6 +752,7 @@ $("#lkChips").addEventListener("click", e => { const b = e.target.closest("[data
 $("#calPrev").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() - 1, 1); renderDeadlines(); });
 $("#calNext").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() + 1, 1); renderDeadlines(); });
 $("#teamPick").addEventListener("change", renderTeam);
+$("#v-team").addEventListener("click", e => { const r = e.target.closest("[data-plan-ed]"); if (r) { S.planEd = r.dataset.planEd; renderPlans(); } });
 $("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); renderKpi(); renderPauseReview(); });
 $("#kpiBody").addEventListener("click", e => { const tr = e.target.closest("[data-kpi]"); if (tr) { S.kpiOpen = S.kpiOpen === tr.dataset.kpi ? null : tr.dataset.kpi; renderKpi(); if (S.kpiOpen) $("#kpiDetail").scrollIntoView({ behavior: "smooth", block: "start" }); } });
 $("#prStatus").addEventListener("click", e => { const b = e.target.closest("[data-pr]"); if (b) { S.prFilter.status = b.dataset.pr; renderPauseReview(); } });
@@ -815,9 +859,11 @@ onAuthStateChanged(auth, async user => {
   if (S.isLead) {
     live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
+    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); });
     live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
+    live(query(collection(db, "plans"), where("editor", "==", S.myName)), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); });
   }
   S.kpiMonth = S.kpiMonth || curMonth();
   subscribeMyKpi();

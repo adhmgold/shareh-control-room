@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=5">
+<link rel="stylesheet" href="styles.css?v=6">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -121,6 +121,7 @@
   <section class="view" id="v-mywork">
     <div class="grid">
       <div class="panel span12" id="noNamePanel" hidden><div class="notice">Your account isn't linked to an SS Tracker name yet. Ask Gold to set your name in the Team tab.</div></div>
+      <div class="panel span12"><h2>My plan today <span class="aside">from SS Tracker</span></h2><div id="myPlan"></div></div>
       <div class="panel span7"><h2>My hours this week <span class="aside" id="meName"></span></h2><div class="bars" id="myWeek"></div>
         <p class="meta" style="margin-top:12px">Log your work in <a href="https://adhmgold.github.io/Editor-tracker/" target="_blank" rel="noopener">SS Tracker</a>. It shows up here instantly.</p></div>
       <div class="panel span5"><h2>My timer</h2><div id="myTimer"></div></div>
@@ -159,6 +160,7 @@
 
   <section class="view" id="v-team">
     <div class="grid">
+      <div class="panel span12"><h2>Today's plans <span class="aside">what each editor planned in SS Tracker · click a name</span></h2><div id="teamPlanSummary"></div><div id="teamPlanList"></div></div>
       <div class="panel span12"><h2>Team hours <span class="aside">hours logged in SS Tracker, last 7 days</span></h2><div class="tscroll" id="teamTable"></div></div>
       <div class="panel span12"><h2>Entries</h2>
         <label class="f" style="max-width:260px;margin-bottom:10px">Editor<select id="teamPick"></select></label>
@@ -181,6 +183,6 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=5"></script>
+<script type="module" src="app.js?v=6"></script>
 </body>
 </html>
