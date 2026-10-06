@@ -219,3 +219,12 @@ fieldset.days{border:0;padding:0;margin:0;display:flex;gap:10px;flex-wrap:wrap;a
 fieldset.days legend{font:700 11px var(--f-display);text-transform:uppercase;letter-spacing:.03em;color:var(--muted);margin-bottom:4px;width:100%}
 fieldset.days label{display:flex;gap:4px;align-items:center;font:500 13px var(--f-body);color:var(--fg);text-transform:none}
 fieldset.days input{width:auto}
+
+.prio-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.prio-row .prio-bar{flex:1 1 auto}
+button.btn.small-reset{padding:5px 12px;font-size:12px;box-shadow:0 2px 0 var(--ink)}
+.tab-picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.tab-pick{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:2px solid var(--line);border-radius:10px;background:var(--bg);cursor:pointer;font:500 13px var(--f-body);text-transform:none;letter-spacing:0;color:var(--fg)}
+.tab-pick input{width:auto;margin-top:3px}
+.tab-pick.none{opacity:.6}
+#dlReset{margin-top:6px}
