@@ -653,9 +653,10 @@ function renderKpi() {
     "</div><p class=\"meta\">The current period updates live. Pauses, holds and hours are shown for context; they don't change the KPI.</p>";
   $("#kpiSettingsPanel").hidden = !S.isLead;
   if (S.isLead) {
-    const res = computeKpi(S.kpiMonth, S.entries), prev = computeKpi(prevMonth(S.kpiMonth), S.entries);
+    const fromSnap = m => { const live = computeKpi(m, S.entries), snap = (S.kpiSnap || {})[m]; if (m !== curMonth() && snap && snap.length && !live.rows.some(r => r.total)) { return { month: m, bounds: periodBounds(m), rows: snap.slice().sort((a, b2) => (b2.enough - a.enough) || ((b2.score ?? -1) - (a.score ?? -1))), saved: true }; } return live; };
+    const res = fromSnap(S.kpiMonth), prev = fromSnap(prevMonth(S.kpiMonth));
     const trendMonths = []; { let m = S.kpiMonth; for (let i = 0; i < 6; i++) { trendMonths.unshift(m); m = prevMonth(m); } }
-    const trend = {}; trendMonths.forEach(m => computeKpi(m, S.entries).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.score; }));
+    const trend = {}; trendMonths.forEach(m => fromSnap(m).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.score; }));
     const teamOn = res.rows.reduce((a, r) => a + r.onTime, 0), teamCounted = res.rows.reduce((a, r) => a + r.counted, 0);
     $("#kpiAsOf").textContent = res.rows.length + " editors · team " + (teamCounted ? Math.round(100 * teamOn / teamCounted) + "% on time (" + teamOn + "/" + teamCounted + ")" : "no tasks due yet");
     $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">KPI</th><th style=\"text-align:end\">Tasks due</th><th style=\"text-align:end\">On time</th><th style=\"text-align:end\">Late</th><th style=\"text-align:end\">Not done</th><th style=\"text-align:end\">Upcoming</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Holds</th><th>6 periods</th></tr></thead><tbody>" +
@@ -665,7 +666,8 @@ function renderKpi() {
     const open = res.rows.find(r => r.name === S.kpiOpen);
     $("#kpiDetail").hidden = !open; $("#kpiDetail").innerHTML = open ? kpiCard(open, prev.rows.find(x => x.name === open.name)) + kpiDetail(open) : "";
     fillKpiSettings();
-    saveKpiSnapshots(res);
+    if (!res.saved) saveKpiSnapshots(res);
+    if (res.saved) $("#kpiAsOf").textContent += " · saved record";
   } else {
     const row = S.kpiMine[S.kpiMonth], prev = S.kpiMine[prevMonth(S.kpiMonth)];
     $("#kpiAsOf").textContent = row && row.savedAt ? "updated " + new Date(row.savedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
@@ -685,7 +687,7 @@ let kpiSaveTimer = null;
 function saveKpiSnapshots(res) {
   clearTimeout(kpiSaveTimer);
   kpiSaveTimer = setTimeout(() => {
-    const months = [res.month, prevMonth(res.month)];
+    const months = res.month === curMonth() ? [res.month] : [];
     months.forEach(m => {
       const r = m === res.month ? res : computeKpi(m, S.entries);
       r.rows.forEach(row => {
@@ -773,7 +775,7 @@ function renderPlans() {
 }
 
 /* ---------- UI events ---------- */
-function showTab(v) { setTimeout(renderResetBtn, 0); document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
+function showTab(v) { setTimeout(renderResetBtn, 0); const rp = document.getElementById("resetPanel"); if (rp) rp.hidden = true; document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button[data-v]"); if (b) { $("#globalSearch").value = ""; renderSearch(); showTab(b.dataset.v); } });
 $("#projChips").addEventListener("click", e => { const b = e.target.closest("[data-proj]"); if (b) { S.projFilter = b.dataset.proj; renderProjects(); } });
 $("#projSearch").addEventListener("input", renderProjects);
@@ -819,6 +821,7 @@ $("#kReset").addEventListener("click", () => { S.kpiSettings = { ...KPI_DEFAULTS
 let myKpiUnsubs = [];
 function subscribeMyKpi() {
   myKpiUnsubs.splice(0).forEach(u => { try { u(); } catch (e) { } });
+  if (S.isLead && S.kpiMonth) { S.kpiSnap = S.kpiSnap || {}; const ms = []; let m = S.kpiMonth; for (let i = 0; i < 6; i++) { ms.push(m); m = prevMonth(m); } ms.forEach(mm => myKpiUnsubs.push(onSnapshot(collection(db, "dash_kpi", mm, "editors"), snap => { S.kpiSnap[mm] = snap.docs.map(d => d.data()); renderKpi(); }, () => { }))); return; }
   if (S.isLead || !S.myName || !S.kpiMonth) return;
   [S.kpiMonth, prevMonth(S.kpiMonth)].forEach(m => myKpiUnsubs.push(onSnapshot(doc(db, "dash_kpi", m, "editors", S.myName), snap => { S.kpiMine[m] = snap.exists() ? snap.data() : null; renderKpi(); }, () => { })));
 }
@@ -862,11 +865,11 @@ $("#roleForm").addEventListener("submit", async e => {
 });
 
 
-/* ---------- reset buttons ---------- */
+/* ---------- reset: clears filters for everyone; leads can also delete data ---------- */
 function currentTab() { const v = document.querySelector("section.view.on"); return v ? v.id.slice(2) : "overview"; }
-function renderResetBtn() { const t = currentTab(); $("#resetView").textContent = "↺ Reset " + ({ overview: "Overview", projects: "Projects", deadlines: "Deadlines", links: "Links", mywork: "My work", kpi: "KPI", team: "Team", search: "search" }[t] || "view"); $("#dlReset").hidden = !S.isLead; }
-function resetView() {
-  const t = currentTab();
+const TAB_NAME = { overview: "Overview", projects: "Projects", deadlines: "Deadlines", links: "Links", mywork: "My work", kpi: "KPI", team: "Team", search: "search" };
+function renderResetBtn() { $("#resetView").textContent = "↺ Reset " + (TAB_NAME[currentTab()] || "view"); }
+function clearFilters(t) {
   S.prio = "all";
   if (t === "search") { $("#globalSearch").value = ""; $("#globalSearch").dispatchEvent(new Event("input")); }
   if (t === "projects") { S.projFilter = "all"; S.statusFilter = "open"; $("#projSearch").value = ""; }
@@ -874,15 +877,59 @@ function resetView() {
   if (t === "links") { S.lkFilter = "All"; $("#lkSearch").value = ""; S.showHiddenLinks = false; }
   if (t === "kpi") { S.kpiMonth = curMonth(); S.kpiOpen = null; S.prFilter = { status: "pending", editor: "" }; subscribeMyKpi(); }
   if (t === "team") { $("#teamPick").value = ""; S.planEd = ""; }
-  renderAll();
 }
-$("#resetView").addEventListener("click", resetView);
-$("#dlReset").addEventListener("click", e => {
-  const b = e.currentTarget, wrap = b.parentElement;
-  if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Delete all " + S.deadlines.length + " team deadlines? Click again to confirm"; setTimeout(() => { if (b.isConnected) { b.dataset.armed = ""; b.textContent = "Reset team deadlines"; } }, 5000); return; }
-  b.dataset.armed = ""; b.disabled = true; b.textContent = "Deleting…";
-  Promise.all(S.deadlines.map(d => deleteDoc(doc(db, "dash_deadlines", d.id)).catch(() => { }))).then(() => { b.disabled = false; b.textContent = "Reset team deadlines"; $("#dlMsg").textContent = "Team deadlines cleared. Timeline and publishing dates come from the sheets and stay."; });
-});
+function freshPeriodTasks() { const end = periodBounds(curMonth()).end; return (S.plans || []).filter(p => p.status === "done" || !p.deadline || p.deadline <= end); }
+function resetOptions() {
+  return [
+    { k: "deadlines", label: "Team deadlines", n: S.deadlines.length, tabs: ["deadlines"], note: "Deadlines added on the dashboard. Timeline and publishing dates come from the sheets and stay." },
+    { k: "links", label: "Team links and removed links", n: S.links.length + (S.hiddenLinks || []).length, tabs: ["links"], note: "Deletes links added on the dashboard and brings back any sheet links you removed." },
+    { k: "stars", label: "High-priority stars", n: Object.keys(S.flags || {}).length, tabs: ["projects"], note: "Stars set by hand on episodes." },
+    { k: "reviews", label: "Pause and hold decisions", n: Object.keys(S.pauseReviews || {}).length, tabs: ["kpi"], note: "Every Accept / Reject goes back to not reviewed." },
+    { k: "period", label: "Start a fresh KPI period", n: freshPeriodTasks().length, tabs: ["kpi", "team"], note: "Deletes editors' tasks that are finished or due by " + fmtDay(periodBounds(curMonth()).end) + ", so the current period's KPI starts from zero. Tasks due later stay. All periods' KPI is saved first, so past periods keep their scores." }
+  ];
+}
+function openReset() {
+  const t = currentTab(), box = $("#resetPanel");
+  if (!box.hidden) { box.hidden = true; return; }
+  const opts = S.isLead ? resetOptions() : [];
+  box.innerHTML = "<div class=\"reset-box\"><b>Reset " + esc(TAB_NAME[t] || "view") + "</b>" +
+    "<label class=\"rs-opt\"><input type=\"checkbox\" checked disabled> <span><b>Clear filters and search</b><span class=\"meta\">Nothing is deleted.</span></span></label>" +
+    opts.map(o => "<label class=\"rs-opt" + (o.n ? "" : " none") + "\"><input type=\"checkbox\" data-rs=\"" + o.k + "\"" + (o.tabs.includes(t) && o.n ? " checked" : "") + (o.n ? "" : " disabled") + "> <span><b>" + esc(o.label) + " (" + o.n + ")</b><span class=\"meta\">" + esc(o.note) + "</span></span></label>").join("") +
+    "<div class=\"inline-row\" style=\"margin:10px 0 0\"><button class=\"btn\" type=\"button\" id=\"rsGo\">Reset</button><button class=\"btn ghost\" type=\"button\" id=\"rsCancel\">Cancel</button><span class=\"meta\" id=\"rsMsg\"></span></div></div>";
+  box.hidden = false;
+}
+async function snapshotAllPeriods() {
+  for (const m of kpiMonths()) {
+    const r = computeKpi(m, S.entries);
+    for (const row of r.rows) await setDoc(doc(db, "dash_kpi", m, "editors", row.name), { ...row, month: m, final: m < curMonth(), savedAt: Date.now() }).catch(() => { });
+  }
+}
+async function runReset() {
+  const t = currentTab(), picks = [...document.querySelectorAll("[data-rs]:checked")].map(c => c.dataset.rs);
+  const go = $("#rsGo"), msg = $("#rsMsg");
+  if (picks.length && go.dataset.armed !== "1") { go.dataset.armed = "1"; go.textContent = "Click again to delete"; go.classList.add("danger-solid"); msg.textContent = "This can't be undone."; return; }
+  go.disabled = true; go.textContent = "Working…";
+  const del = (c, id) => deleteDoc(doc(db, c, id)).catch(() => { });
+  try {
+    if (picks.includes("deadlines")) await Promise.all(S.deadlines.map(d => del("dash_deadlines", d.id)));
+    if (picks.includes("links")) { await Promise.all(S.links.map(l => del("dash_links", l.id))); await setDoc(doc(db, "dash_settings", "links"), { hidden: [] }, { merge: true }).catch(() => { }); }
+    if (picks.includes("stars")) await Promise.all(Object.keys(S.flags || {}).map(k => del("dash_flags", k)));
+    if (picks.includes("reviews")) await Promise.all(Object.keys(S.pauseReviews || {}).map(k => del("dash_pause_reviews", k)));
+    if (picks.includes("period")) {
+      msg.textContent = "Saving every period's KPI…"; await snapshotAllPeriods();
+      const cur = curMonth(), names = computeKpi(cur, S.entries).rows.map(r => r.name);
+      msg.textContent = "Deleting tasks…"; await Promise.all(freshPeriodTasks().map(p => del("plans", p.id)));
+      await Promise.all(names.map(n => deleteDoc(doc(db, "dash_kpi", cur, "editors", n)).catch(() => { })));
+      Object.keys(kpiWritten).forEach(k => { if (k.startsWith(cur + "/")) delete kpiWritten[k]; });
+    }
+    clearFilters(t);
+    $("#resetPanel").hidden = true;
+    renderAll();
+  } catch (e) { msg.textContent = "Something failed. Only leads can delete data."; go.disabled = false; go.textContent = "Reset"; }
+}
+$("#resetView").addEventListener("click", openReset);
+$("#resetPanel").addEventListener("click", e => { if (e.target.id === "rsGo") runReset(); if (e.target.id === "rsCancel") $("#resetPanel").hidden = true; });
+$("#resetPanel").addEventListener("change", () => { const g = $("#rsGo"); if (g) { g.dataset.armed = ""; g.textContent = "Reset"; g.classList.remove("danger-solid"); } });
 $("#ssSave").addEventListener("click", saveSheetSetup);
 $("#ssLinkAll").addEventListener("click", () => document.querySelectorAll("[data-linktab]").forEach(c => { c.checked = c.closest(".tab-pick").classList.contains("none") ? c.checked : true; }));
 $("#ssLinkNone").addEventListener("click", () => document.querySelectorAll("[data-linktab]").forEach(c => { c.checked = false; }));

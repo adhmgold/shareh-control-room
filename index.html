@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=8">
+<link rel="stylesheet" href="styles.css?v=9">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -42,6 +42,7 @@
       <button role="tab" data-v="team" aria-selected="false" id="teamTab" hidden>Team</button>
     </nav>
     <div class="prio-row"><div class="prio-bar" id="prioBar"></div><button class="btn ghost small-reset" type="button" id="resetView">↺ Reset view</button></div>
+    <div id="resetPanel" hidden></div>
   </div>
 </header>
 
@@ -96,7 +97,6 @@
           <button class="btn" type="submit" id="dlSubmit">Add deadline</button>
         </form>
         <p class="meta" id="dlMsg"></p>
-        <button class="btn ghost" type="button" id="dlReset" hidden>Reset team deadlines</button>
         <h2 style="margin-top:16px">All upcoming</h2><ul class="list" id="dl-list"></ul>
       </div>
     </div>
@@ -187,6 +187,6 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=8"></script>
+<script type="module" src="app.js?v=9"></script>
 </body>
 </html>

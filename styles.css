@@ -228,3 +228,11 @@ button.btn.small-reset{padding:5px 12px;font-size:12px;box-shadow:0 2px 0 var(--
 .tab-pick input{width:auto;margin-top:3px}
 .tab-pick.none{opacity:.6}
 #dlReset{margin-top:6px}
+
+#resetPanel{padding-bottom:12px}
+.reset-box{background:var(--surface);border:2px solid var(--ink);border-radius:14px;padding:14px 16px;box-shadow:0 3px 0 var(--line);display:flex;flex-direction:column;gap:8px;max-width:760px;margin-inline-start:auto}
+.rs-opt{display:flex;gap:10px;align-items:flex-start;font:500 13px var(--f-body);text-transform:none;letter-spacing:0;color:var(--fg);cursor:pointer}
+.rs-opt input{width:auto;margin-top:3px}
+.rs-opt span{display:flex;flex-direction:column;gap:1px}
+.rs-opt.none{opacity:.5}
+button.btn.danger-solid{background:var(--bad-fill);color:#fff}
