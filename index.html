@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=9">
+<link rel="stylesheet" href="styles.css?v=10">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -41,8 +41,7 @@
       <button role="tab" data-v="kpi" aria-selected="false">KPI</button>
       <button role="tab" data-v="team" aria-selected="false" id="teamTab" hidden>Team</button>
     </nav>
-    <div class="prio-row"><div class="prio-bar" id="prioBar"></div><button class="btn ghost small-reset" type="button" id="resetView">↺ Reset view</button></div>
-    <div id="resetPanel" hidden></div>
+    <div class="prio-bar" id="prioBar"></div>
   </div>
 </header>
 
@@ -50,6 +49,9 @@
   <section class="view" id="v-search"><div class="grid" id="searchResults"></div></section>
 
   <section class="view on" id="v-overview">
+    <div class="tab-tools" hidden><button class="btn ghost small-reset" type="button" data-src-open="overview">⚙ Choose sheet tabs</button><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="overview">↺ Reset tab</button></div>
+    <div id="src-overview" hidden></div>
+    <div id="rs-overview" hidden></div>
     <div class="strip">
       <div class="kpi"><div class="lab">Episodes done</div><div class="val" id="k-done">—</div><div class="sub" id="k-done-s">waiting for sheets</div></div>
       <div class="kpi"><div class="lab">Due in 14 days</div><div class="val" id="k-due">—</div><div class="sub">deliveries &amp; deadlines</div></div>
@@ -68,6 +70,9 @@
   </section>
 
   <section class="view" id="v-projects">
+    <div class="tab-tools" hidden><button class="btn ghost small-reset" type="button" data-src-open="projects">⚙ Choose sheet tabs</button><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="projects">↺ Reset tab</button></div>
+    <div id="src-projects" hidden></div>
+    <div id="rs-projects" hidden></div>
     <div class="chips" id="projChips"></div>
     <div class="chips" id="statusChips"></div>
     <div class="grid">
@@ -81,6 +86,9 @@
   </section>
 
   <section class="view" id="v-deadlines">
+    <div class="tab-tools" hidden><button class="btn ghost small-reset" type="button" data-src-open="deadlines">⚙ Choose sheet tabs</button><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="deadlines">↺ Reset tab</button></div>
+    <div id="src-deadlines" hidden></div>
+    <div id="rs-deadlines" hidden></div>
     <div class="grid">
       <div class="panel span8">
         <div class="cal-head"><button class="btn ghost" type="button" id="calPrev">‹ Prev</button><b id="calLabel"></b><button class="btn ghost" type="button" id="calNext">Next ›</button></div>
@@ -103,6 +111,9 @@
   </section>
 
   <section class="view" id="v-links">
+    <div class="tab-tools" hidden><button class="btn ghost small-reset" type="button" data-src-open="links">⚙ Choose sheet tabs</button><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="links">↺ Reset tab</button></div>
+    <div id="src-links" hidden></div>
+    <div id="rs-links" hidden></div>
     <div class="grid">
       <div class="panel span12"><h2>Link hub <span class="aside">sheets, scripts, Frame.io and team links</span></h2>
         <form id="lkForm" class="inline" style="margin-bottom:14px">
@@ -133,6 +144,8 @@
   </section>
 
   <section class="view" id="v-kpi">
+    <div class="tab-tools" hidden><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="kpi">↺ Reset tab</button></div>
+    <div id="rs-kpi" hidden></div>
     <div class="grid">
       <div class="panel span12"><h2>Editor KPI <span class="aside" id="kpiAsOf"></span></h2>
         <label class="f" style="max-width:240px;margin-bottom:12px">Month<select id="kpiMonth"></select></label>
@@ -153,22 +166,14 @@
   </section>
 
   <section class="view" id="v-team">
+    <div class="tab-tools" hidden><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="team">↺ Reset tab</button></div>
+    <div id="rs-team" hidden></div>
     <div class="grid">
       <div class="panel span12"><h2>Today's plans <span class="aside">what each editor planned in SS Tracker · click a name</span></h2><div id="teamPlanSummary"></div><div id="teamPlanList"></div></div>
       <div class="panel span12"><h2>Team hours <span class="aside">hours logged in SS Tracker, last 7 days</span></h2><div class="tscroll" id="teamTable"></div></div>
       <div class="panel span12"><h2>Entries</h2>
         <label class="f" style="max-width:260px;margin-bottom:10px">Editor<select id="teamPick"></select></label>
         <div class="tscroll" id="teamEntries"></div></div>
-      <div class="panel span12" id="sheetSetup" hidden><h2>Sheets setup <span class="aside">leads only · applies to everyone</span></h2>
-        <h3 class="sub-h">Take links from these sheet tabs</h3>
-        <p class="meta">Every link in a ticked tab shows in the Links tab, grouped by tab name.</p>
-        <div class="inline-row"><button class="link" type="button" id="ssLinkAll">Tick all tabs with links</button><button class="link" type="button" id="ssLinkNone">Untick all</button></div>
-        <div id="ssLinks"></div>
-        <h3 class="sub-h">Project progress</h3>
-        <p class="meta">Untick a tab to hide it from progress and the episode list. Rename it, or type numbers in "Set done" and "Set total" to override what the sheet says. Leave them empty to use the sheet.</p>
-        <div id="ssProjects"></div>
-        <div class="inline-row" style="margin-top:12px"><button class="btn" type="button" id="ssSave">Save sheets setup</button><span class="meta" id="ssMsg"></span></div>
-      </div>
       <div class="panel span12"><h2>Who can open the dashboard</h2>
         <form id="roleForm" class="inline" style="margin-bottom:12px">
           <label class="f">Google email<input id="roleEmail" type="email" required placeholder="name@gmail.com"></label>
@@ -187,6 +192,6 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=9"></script>
+<script type="module" src="app.js?v=10"></script>
 </body>
 </html>

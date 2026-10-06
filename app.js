@@ -108,7 +108,7 @@ function parseMaster(tabs) {
   return { projects, episodes, reshoots, links };
 }
 function parseTimeline(tabs) {
-  const out = []; const tab = tabs[0]; if (!tab) return out; const rows = tab.rows || [];
+  const out = []; tabs.forEach(tab => { const rows = tab.rows || [];
   const head = (rows[0] || []).map(cellStr); const ci = re => head.findIndex(v => re.test(v));
   const cG = ci(/grade/i), cU = ci(/unit/i), cS = ci(/schedule/i), cF = ci(/red flag/i), cD = ci(/تسليم/), cSh = ci(/تصوير/), cP = ci(/المنصة/);
   for (let i = 1; i < rows.length; i++) {
@@ -117,6 +117,7 @@ function parseTimeline(tabs) {
     const dRaw = cellStr(r[cD]), fRaw = cellStr(r[cF]), pRaw = cellStr(r[cP]);
     out.push({ grade: g.toUpperCase(), unit: u, school: cellStr(r[cS]), delivery: parseLooseDate(dRaw), flag: fRaw, flagDate: parseLooseDate(fRaw), shoot: cellStr(r[cSh]), done: /done/i.test(pRaw) || /done/i.test(dRaw) });
   }
+  });
   return out;
 }
 function parseCalendar(tabs) {
@@ -141,8 +142,35 @@ function parseCalendar(tabs) {
   return { tabs: outTabs, items };
 }
 const SHEET_LABEL = { master: "Master tracker", timeline: "Timeline", calendar: "Publishing calendar" };
-const DEFAULT_LINK_TABS = ["master|Important Links"];
-function srcCfg() { const c = S.srcSettings || {}; return { linkTabs: Array.isArray(c.linkTabs) ? c.linkTabs : DEFAULT_LINK_TABS, projects: c.projects || {} }; }
+/* Which sheet tabs feed each dashboard tab. Saved in dash_settings/sources as arrays of "sheetKey|Tab name".
+   A tab reset saves an empty array, so that dashboard tab shows nothing until tabs are chosen again. */
+function allSheetTabs() {
+  const out = [];
+  Object.keys(SHEET_LABEL).forEach(key => ((S.raw[key] || {}).tabs || []).forEach(tab => out.push({ id: key + "|" + tab.name.trim(), key, tab, kinds: tabKinds(tab) })));
+  return out;
+}
+function tabKinds(tab) {
+  const rows = tab.rows || [], k = [], top = rows.slice(0, 8).map(r => (r || []).map(cellStr));
+  const any = re => top.some(r => r.some(v => re.test(v)));
+  if (any(/episode code|lesson code|^videos$/i)) k.push(/re-?shoot/i.test(tab.name) ? "reshoot" : "tracker");
+  if ((top[0] || []).some(v => /grade/i.test(v)) && (top[0] || []).some(v => /تسليم/.test(v))) k.push("timeline");
+  if (top.some(r => r.some(v => /status|الحالة/i.test(v)) && r.some(v => /publish date|تاريخ النشر/i.test(v)))) k.push("calendar");
+  if (Object.keys(tab.links || {}).length) k.push("links");
+  return k;
+}
+const KIND_LABEL = { tracker: "Episode tracker", reshoot: "Re-shoots", timeline: "Delivery timeline", calendar: "Publishing calendar", links: "Links" };
+const SRC_TABS = { overview: "Overview", projects: "Projects", deadlines: "Deadlines", links: "Links" };
+function srcDefaults(tabs) {
+  const ids = f => tabs.filter(f).map(t => t.id);
+  const projects = ids(t => t.kinds.includes("tracker") || t.kinds.includes("reshoot"));
+  const deadlines = ids(t => t.kinds.includes("timeline") || t.kinds.includes("calendar"));
+  return { projects, deadlines, overview: [...projects, ...deadlines], links: ["master|Important Links"] };
+}
+function srcCfg() {
+  const c = S.srcSettings || {}, d = srcDefaults(S.allTabs || []);
+  const pick = k => Array.isArray(c[k]) ? c[k] : (k === "links" && Array.isArray(c.linkTabs) ? c.linkTabs : d[k]);
+  return { overview: pick("overview"), projects: pick("projects"), deadlines: pick("deadlines"), links: pick("links"), projectCfg: c.projectCfg || c.projects && !Array.isArray(c.projects) && c.projects || {} };
+}
 function tabLinks(key, tab) {
   const out = [], rows = tab.rows || [], lk = tab.links || {};
   Object.entries(lk).forEach(([rc, url]) => {
@@ -152,49 +180,39 @@ function tabLinks(key, tab) {
   });
   return out;
 }
-function applySheets() {
-  const m = parseMaster((S.raw.master || {}).tabs || []);
-  const cfg = srcCfg();
-  S.allProjects = m.projects.map(p => ({ ...p }));
-  // Project progress: hide, rename or override each tracker tab (Team → Sheets setup)
-  const rename = {}, hiddenP = new Set();
-  S.projects = m.projects.filter(p => { const c = cfg.projects[p.name] || {}; if (c.show === false) { hiddenP.add(p.name); return false; } return true; }).map(p => {
-    const c = cfg.projects[p.name] || {}; const out = { ...p };
+function buildData(ids, cfg) {
+  const tabs = (S.allTabs || []).filter(t => ids.includes(t.id));
+  const m = parseMaster(tabs.filter(t => t.kinds.includes("tracker") || t.kinds.includes("reshoot")).map(t => t.tab));
+  const rename = {}, hiddenP = new Set(), pc = cfg.projectCfg || {};
+  const projects = m.projects.filter(p => { if ((pc[p.name] || {}).show === false) { hiddenP.add(p.name); return false; } return true; }).map(p => {
+    const c = pc[p.name] || {}; const out = { ...p };
     if (c.name && c.name.trim()) { out.name = c.name.trim(); rename[p.name] = out.name; }
     if (c.done != null && c.done !== "") { const total = c.total != null && c.total !== "" ? +c.total : p.total; out.total = Math.max(1, total); out.done = Math.min(out.total, +c.done); out.review = 0; out.wip = 0; out.todo = out.total - out.done; out.manual = true; }
     return out;
   });
-  S.episodes = m.episodes.filter(e => !hiddenP.has(e.project)).map(e => rename[e.project] ? { ...e, project: rename[e.project] } : e);
-  S.reshoots = m.reshoots;
-  // Links: every hyperlink in the sheet tabs chosen in Sheets setup
+  const episodes = m.episodes.filter(e => !hiddenP.has(e.project)).map(e => rename[e.project] ? { ...e, project: rename[e.project] } : e);
+  const timeline = [].concat(...tabs.filter(t => t.kinds.includes("timeline")).map(t => parseTimeline([t.tab])));
+  const publish = parseCalendar(tabs.filter(t => t.kinds.includes("calendar")).map(t => t.tab));
+  return { projects, episodes, reshoots: m.reshoots, timeline, publish, rawProjects: m.projects };
+}
+function applySheets() {
+  S.allTabs = allSheetTabs();
+  const cfg = srcCfg();
+  const P = buildData(cfg.projects, cfg), D = buildData(cfg.deadlines, cfg), O = buildData(cfg.overview, cfg);
+  S.projects = P.projects; S.episodes = P.episodes; S.reshoots = P.reshoots;
+  S.timeline = D.timeline; S.publish = D.publish;
+  S.ov = O;
+  S.allProjects = buildData(S.allTabs.filter(t => t.kinds.includes("tracker")).map(t => t.id), { projectCfg: {} }).rawProjects;
   const seen = new Set(); S.sheetLinks = [];
-  Object.keys(SHEET_LABEL).forEach(key => ((S.raw[key] || {}).tabs || []).forEach(tab => {
-    if (!cfg.linkTabs.includes(key + "|" + tab.name.trim())) return;
-    tabLinks(key, tab).forEach(l => { if (!seen.has(l.url)) { seen.add(l.url); S.sheetLinks.push(l); } });
-  }));
-  S.timeline = parseTimeline((S.raw.timeline || {}).tabs || []);
-  S.publish = parseCalendar((S.raw.calendar || {}).tabs || []);
+  S.allTabs.filter(t => cfg.links.includes(t.id)).forEach(t => tabLinks(t.key, t.tab).forEach(l => { if (!seen.has(l.url)) { seen.add(l.url); S.sheetLinks.push(l); } }));
   $("#projList").innerHTML = S.projects.map(p => "<option>" + esc(p.name) + "</option>").join("");
   renderAll();
 }
-function renderSheetSetup() {
-  const panel = $("#sheetSetup"); if (!S.isLead) { panel.hidden = true; return; } panel.hidden = false;
-  const cfg = srcCfg();
-  const tabs = []; Object.keys(SHEET_LABEL).forEach(key => ((S.raw[key] || {}).tabs || []).forEach(tab => tabs.push({ key, tab, id: key + "|" + tab.name.trim(), n: Object.keys(tab.links || {}).length })));
-  $("#ssLinks").innerHTML = tabs.length ? "<div class=\"tab-picks\">" + tabs.map(t => "<label class=\"tab-pick" + (t.n ? "" : " none") + "\"><input type=\"checkbox\" data-linktab=\"" + esc(t.id) + "\"" + (cfg.linkTabs.includes(t.id) ? " checked" : "") + "> <span><b>" + esc(t.tab.name.trim()) + "</b><span class=\"meta\"> · " + esc(SHEET_LABEL[t.key]) + " · " + t.n + " link" + (t.n === 1 ? "" : "s") + "</span></span></label>").join("") + "</div>" : "<p class=\"empty\">Sheet tabs appear after the first sheet sync.</p>";
-  const ps = S.allProjects || [];
-  $("#ssProjects").innerHTML = ps.length ? "<div class=\"tscroll\"><table><thead><tr><th>Show</th><th>Sheet tab</th><th>Name on dashboard</th><th style=\"text-align:end\">From sheet</th><th>Set done</th><th>Set total</th></tr></thead><tbody>" + ps.map(p => { const c = cfg.projects[p.name] || {};
-    return "<tr data-proj-row=\"" + esc(p.name) + "\"><td><input type=\"checkbox\" class=\"ps-show\"" + (c.show === false ? "" : " checked") + " aria-label=\"Show " + esc(p.name) + "\"></td><td>" + esc(p.name) + "</td><td><input class=\"ps-name\" value=\"" + esc(c.name || "") + "\" placeholder=\"" + esc(p.name) + "\"></td><td class=\"n\">" + p.done + "/" + p.total + "</td><td><input class=\"ps-done\" type=\"number\" min=\"0\" value=\"" + esc(c.done ?? "") + "\" placeholder=\"auto\" style=\"max-width:90px\"></td><td><input class=\"ps-total\" type=\"number\" min=\"1\" value=\"" + esc(c.total ?? "") + "\" placeholder=\"auto\" style=\"max-width:90px\"></td></tr>"; }).join("") + "</tbody></table></div>" : "<p class=\"empty\">Projects appear after the first sheet sync.</p>";
-}
-async function saveSheetSetup() {
-  const linkTabs = [...document.querySelectorAll("[data-linktab]:checked")].map(c => c.dataset.linktab);
-  const projects = {};
-  document.querySelectorAll("[data-proj-row]").forEach(tr => {
-    const done = tr.querySelector(".ps-done").value, total = tr.querySelector(".ps-total").value, name = tr.querySelector(".ps-name").value.trim(), show = tr.querySelector(".ps-show").checked;
-    if (!show || name || done !== "" || total !== "") projects[tr.dataset.projRow] = { show, name, done: done === "" ? null : +done, total: total === "" ? null : +total };
-  });
-  try { await setDoc(doc(db, "dash_settings", "sources"), { linkTabs, projects, by: S.email, at: Date.now() }); $("#ssMsg").textContent = "Saved. The dashboard updated for everyone."; }
-  catch (e) { $("#ssMsg").textContent = "Couldn't save. Only leads can change this."; }
+/* Overview uses its own choice of sheet tabs: render it with that data swapped in. */
+function withOverviewData(fn) {
+  const save = { projects: S.projects, episodes: S.episodes, timeline: S.timeline, publish: S.publish };
+  if (S.ov) Object.assign(S, { projects: S.ov.projects, episodes: S.ov.episodes, timeline: S.ov.timeline, publish: S.ov.publish });
+  try { fn(); } finally { Object.assign(S, save); }
 }
 function setSync() {
   const keys = Object.keys(SHEETS).filter(k => !SHEETS[k].linkOnly);
@@ -446,7 +464,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); renderOverview(); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderPlans(); renderSheetSetup(); renderResetBtn(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderPlans(); renderResetBtn(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -775,7 +793,7 @@ function renderPlans() {
 }
 
 /* ---------- UI events ---------- */
-function showTab(v) { setTimeout(renderResetBtn, 0); const rp = document.getElementById("resetPanel"); if (rp) rp.hidden = true; document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
+function showTab(v) { document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button[data-v]"); if (b) { $("#globalSearch").value = ""; renderSearch(); showTab(b.dataset.v); } });
 $("#projChips").addEventListener("click", e => { const b = e.target.closest("[data-proj]"); if (b) { S.projFilter = b.dataset.proj; renderProjects(); } });
 $("#projSearch").addEventListener("input", renderProjects);
@@ -826,7 +844,7 @@ function subscribeMyKpi() {
   [S.kpiMonth, prevMonth(S.kpiMonth)].forEach(m => myKpiUnsubs.push(onSnapshot(doc(db, "dash_kpi", m, "editors", S.myName), snap => { S.kpiMine[m] = snap.exists() ? snap.data() : null; renderKpi(); }, () => { })));
 }
 
-setInterval(() => { renderOverview(); renderMyWork(); setSync(); }, 30000);
+setInterval(() => { withOverviewData(renderOverview); renderMyWork(); setSync(); }, 30000);
 
 function confirmIn(wrap, label, onYes) {
   const orig = wrap.innerHTML;
@@ -865,74 +883,96 @@ $("#roleForm").addEventListener("submit", async e => {
 });
 
 
-/* ---------- reset: clears filters for everyone; leads can also delete data ---------- */
+/* ---------- each tab's toolbar: Choose sheet tabs + Reset tab (leads) ---------- */
 function currentTab() { const v = document.querySelector("section.view.on"); return v ? v.id.slice(2) : "overview"; }
-const TAB_NAME = { overview: "Overview", projects: "Projects", deadlines: "Deadlines", links: "Links", mywork: "My work", kpi: "KPI", team: "Team", search: "search" };
-function renderResetBtn() { $("#resetView").textContent = "↺ Reset " + (TAB_NAME[currentTab()] || "view"); }
-function clearFilters(t) {
-  S.prio = "all";
-  if (t === "search") { $("#globalSearch").value = ""; $("#globalSearch").dispatchEvent(new Event("input")); }
-  if (t === "projects") { S.projFilter = "all"; S.statusFilter = "open"; $("#projSearch").value = ""; }
-  if (t === "deadlines") { S.kindFilter = "all"; S.calMonth = null; }
-  if (t === "links") { S.lkFilter = "All"; $("#lkSearch").value = ""; S.showHiddenLinks = false; }
-  if (t === "kpi") { S.kpiMonth = curMonth(); S.kpiOpen = null; S.prFilter = { status: "pending", editor: "" }; subscribeMyKpi(); }
-  if (t === "team") { $("#teamPick").value = ""; S.planEd = ""; }
+function renderResetBtn() { document.querySelectorAll(".tab-tools").forEach(t => { t.hidden = !S.isLead; }); }
+function renderSrcPanel(tabKey) {
+  const box = $("#src-" + tabKey), cfg = srcCfg(), chosen = new Set(cfg[tabKey] || []);
+  const tabs = S.allTabs || [];
+  const bySheet = Object.keys(SHEET_LABEL).map(k => ({ k, tabs: tabs.filter(t => t.key === k) })).filter(g => g.tabs.length);
+  const useful = t => tabKey === "links" ? t.kinds.includes("links") : tabKey === "projects" ? t.kinds.some(k => k === "tracker" || k === "reshoot") : tabKey === "deadlines" ? t.kinds.some(k => k === "timeline" || k === "calendar") : t.kinds.some(k => k !== "links");
+  let html = "<div class=\"src-box\"><div class=\"src-head\"><b>Sheet tabs shown in " + SRC_TABS[tabKey] + "</b><span class=\"meta\">Tick the tabs this page should use. Tabs the dashboard can't read for this page are faded.</span></div>" +
+    (tabs.length ? bySheet.map(g => "<div class=\"src-sheet\"><div class=\"sub-h\">" + esc(SHEET_LABEL[g.k]) + "</div><div class=\"tab-picks\">" + g.tabs.map(t => {
+      const n = Object.keys(t.tab.links || {}).length;
+      const kinds = t.kinds.filter(k => tabKey === "links" ? k === "links" : k !== "links").map(k => KIND_LABEL[k] + (k === "links" ? " · " + n : "")).join(", ") || "Not readable here";
+      return "<label class=\"tab-pick" + (useful(t) ? "" : " none") + "\"><input type=\"checkbox\" data-src-tab=\"" + esc(t.id) + "\"" + (chosen.has(t.id) ? " checked" : "") + "> <span><b>" + esc(t.tab.name.trim()) + "</b><span class=\"meta\"> · " + esc(kinds) + "</span></span></label>";
+    }).join("") + "</div></div>").join("") : "<p class=\"empty\">Sheet tabs appear after the first sheet sync.</p>");
+  if (tabKey === "projects" && (S.allProjects || []).length) {
+    const pc = cfg.projectCfg || {};
+    html += "<div class=\"sub-h\">Rename or override progress</div><p class=\"meta\">Leave empty to use what the sheet says.</p><div class=\"tscroll\"><table><thead><tr><th>Sheet tab</th><th>Name on dashboard</th><th style=\"text-align:end\">From sheet</th><th>Set done</th><th>Set total</th></tr></thead><tbody>" +
+      S.allProjects.map(p => { const c = pc[p.name] || {}; return "<tr data-proj-row=\"" + esc(p.name) + "\"><td>" + esc(p.name) + "</td><td><input class=\"ps-name\" value=\"" + esc(c.name || "") + "\" placeholder=\"" + esc(p.name) + "\"></td><td class=\"n\">" + p.done + "/" + p.total + "</td><td><input class=\"ps-done\" type=\"number\" min=\"0\" value=\"" + esc(c.done ?? "") + "\" placeholder=\"auto\" style=\"max-width:90px\"></td><td><input class=\"ps-total\" type=\"number\" min=\"1\" value=\"" + esc(c.total ?? "") + "\" placeholder=\"auto\" style=\"max-width:90px\"></td></tr>"; }).join("") + "</tbody></table></div>";
+  }
+  html += "<div class=\"inline-row\" style=\"margin-top:12px\"><button class=\"btn\" type=\"button\" data-src-save=\"" + tabKey + "\">Save</button><button class=\"link\" type=\"button\" data-src-all=\"" + tabKey + "\">Tick all readable</button><button class=\"link\" type=\"button\" data-src-none=\"" + tabKey + "\">Untick all</button><button class=\"btn ghost\" type=\"button\" data-src-close=\"" + tabKey + "\">Close</button><span class=\"meta\" data-src-msg=\"" + tabKey + "\"></span></div></div>";
+  box.innerHTML = html;
 }
-function freshPeriodTasks() { const end = periodBounds(curMonth()).end; return (S.plans || []).filter(p => p.status === "done" || !p.deadline || p.deadline <= end); }
-function resetOptions() {
-  return [
-    { k: "deadlines", label: "Team deadlines", n: S.deadlines.length, tabs: ["deadlines"], note: "Deadlines added on the dashboard. Timeline and publishing dates come from the sheets and stay." },
-    { k: "links", label: "Team links and removed links", n: S.links.length + (S.hiddenLinks || []).length, tabs: ["links"], note: "Deletes links added on the dashboard and brings back any sheet links you removed." },
-    { k: "stars", label: "High-priority stars", n: Object.keys(S.flags || {}).length, tabs: ["projects"], note: "Stars set by hand on episodes." },
-    { k: "reviews", label: "Pause and hold decisions", n: Object.keys(S.pauseReviews || {}).length, tabs: ["kpi"], note: "Every Accept / Reject goes back to not reviewed." },
-    { k: "period", label: "Start a fresh KPI period", n: freshPeriodTasks().length, tabs: ["kpi", "team"], note: "Deletes editors' tasks that are finished or due by " + fmtDay(periodBounds(curMonth()).end) + ", so the current period's KPI starts from zero. Tasks due later stay. All periods' KPI is saved first, so past periods keep their scores." }
-  ];
+async function saveSrc(tabKey, ids, extra) {
+  const c = srcCfg();
+  const data = { overview: c.overview, projects: c.projects, deadlines: c.deadlines, links: c.links, projectCfg: c.projectCfg, by: S.email, at: Date.now() };
+  data[tabKey] = ids; if (extra) Object.assign(data, extra);
+  await setDoc(doc(db, "dash_settings", "sources"), data);
 }
-function openReset() {
-  const t = currentTab(), box = $("#resetPanel");
-  if (!box.hidden) { box.hidden = true; return; }
-  const opts = S.isLead ? resetOptions() : [];
-  box.innerHTML = "<div class=\"reset-box\"><b>Reset " + esc(TAB_NAME[t] || "view") + "</b>" +
-    "<label class=\"rs-opt\"><input type=\"checkbox\" checked disabled> <span><b>Clear filters and search</b><span class=\"meta\">Nothing is deleted.</span></span></label>" +
-    opts.map(o => "<label class=\"rs-opt" + (o.n ? "" : " none") + "\"><input type=\"checkbox\" data-rs=\"" + o.k + "\"" + (o.tabs.includes(t) && o.n ? " checked" : "") + (o.n ? "" : " disabled") + "> <span><b>" + esc(o.label) + " (" + o.n + ")</b><span class=\"meta\">" + esc(o.note) + "</span></span></label>").join("") +
-    "<div class=\"inline-row\" style=\"margin:10px 0 0\"><button class=\"btn\" type=\"button\" id=\"rsGo\">Reset</button><button class=\"btn ghost\" type=\"button\" id=\"rsCancel\">Cancel</button><span class=\"meta\" id=\"rsMsg\"></span></div></div>";
+function resetPlan(tabKey) {
+  const end = periodBounds(curMonth()).end;
+  return {
+    overview: { items: ["Stop showing every sheet tab in Overview (the page will be empty until you choose tabs again)"] },
+    projects: { items: ["Stop showing every sheet tab in Projects", "Delete all renames and progress overrides", "Delete all " + Object.keys(S.flags || {}).length + " high-priority stars"] },
+    deadlines: { items: ["Stop showing every sheet tab in Deadlines (Timeline and publishing dates)", "Delete all " + S.deadlines.length + " team deadlines"] },
+    links: { items: ["Stop taking links from every sheet tab", "Delete all " + S.links.length + " team links", "Forget removed-link choices"] },
+    kpi: { items: ["Save every period's KPI first (past periods keep their scores)", "Delete " + (S.plans || []).filter(p => p.status === "done" || !p.deadline || p.deadline <= end).length + " editor tasks that are finished or due by " + fmtDay(end) + " (tasks due later stay)", "Delete the current period's saved KPI", "Delete all " + Object.keys(S.pauseReviews || {}).length + " pause and hold decisions"] },
+    team: { items: ["Save every period's KPI first", "Delete all " + (S.plans || []).length + " editor tasks (Today's plan in SS Tracker, for every editor)"], note: "The access list and SS Tracker hours are kept." }
+  }[tabKey];
+}
+function openTabReset(tabKey) {
+  const box = $("#rs-" + tabKey); if (!box.hidden) { box.hidden = true; return; }
+  const plan = resetPlan(tabKey);
+  box.innerHTML = "<div class=\"reset-box\"><b>Reset " + esc(TAB_NAME[tabKey]) + " — this deletes:</b><ul class=\"rs-list\">" + plan.items.map(i => "<li>" + esc(i) + "</li>").join("") + "</ul>" + (plan.note ? "<p class=\"meta\">" + esc(plan.note) + "</p>" : "") +
+    "<div class=\"inline-row\"><button class=\"btn danger-solid\" type=\"button\" data-rs-go=\"" + tabKey + "\">Delete everything</button><button class=\"btn ghost\" type=\"button\" data-rs-cancel=\"" + tabKey + "\">Cancel</button><span class=\"meta\" data-rs-msg=\"" + tabKey + "\"></span></div></div>";
   box.hidden = false;
 }
 async function snapshotAllPeriods() {
-  for (const m of kpiMonths()) {
-    const r = computeKpi(m, S.entries);
-    for (const row of r.rows) await setDoc(doc(db, "dash_kpi", m, "editors", row.name), { ...row, month: m, final: m < curMonth(), savedAt: Date.now() }).catch(() => { });
-  }
+  for (const m of kpiMonths()) { const r = computeKpi(m, S.entries); for (const row of r.rows) await setDoc(doc(db, "dash_kpi", m, "editors", row.name), { ...row, month: m, final: m < curMonth(), savedAt: Date.now() }).catch(() => { }); }
 }
-async function runReset() {
-  const t = currentTab(), picks = [...document.querySelectorAll("[data-rs]:checked")].map(c => c.dataset.rs);
-  const go = $("#rsGo"), msg = $("#rsMsg");
-  if (picks.length && go.dataset.armed !== "1") { go.dataset.armed = "1"; go.textContent = "Click again to delete"; go.classList.add("danger-solid"); msg.textContent = "This can't be undone."; return; }
-  go.disabled = true; go.textContent = "Working…";
+async function runTabReset(tabKey, btn) {
+  const msg = document.querySelector("[data-rs-msg=\"" + tabKey + "\"]");
+  if (btn.dataset.armed !== "1") { btn.dataset.armed = "1"; btn.textContent = "Click again to confirm"; msg.textContent = "This can't be undone."; return; }
+  btn.disabled = true; btn.textContent = "Deleting…";
   const del = (c, id) => deleteDoc(doc(db, c, id)).catch(() => { });
   try {
-    if (picks.includes("deadlines")) await Promise.all(S.deadlines.map(d => del("dash_deadlines", d.id)));
-    if (picks.includes("links")) { await Promise.all(S.links.map(l => del("dash_links", l.id))); await setDoc(doc(db, "dash_settings", "links"), { hidden: [] }, { merge: true }).catch(() => { }); }
-    if (picks.includes("stars")) await Promise.all(Object.keys(S.flags || {}).map(k => del("dash_flags", k)));
-    if (picks.includes("reviews")) await Promise.all(Object.keys(S.pauseReviews || {}).map(k => del("dash_pause_reviews", k)));
-    if (picks.includes("period")) {
+    if (tabKey === "overview") await saveSrc("overview", []);
+    if (tabKey === "projects") { await saveSrc("projects", [], { projectCfg: {} }); await Promise.all(Object.keys(S.flags || {}).map(k => del("dash_flags", k))); }
+    if (tabKey === "deadlines") { await saveSrc("deadlines", []); await Promise.all(S.deadlines.map(d => del("dash_deadlines", d.id))); }
+    if (tabKey === "links") { await saveSrc("links", []); await Promise.all(S.links.map(l => del("dash_links", l.id))); await setDoc(doc(db, "dash_settings", "links"), { hidden: [] }).catch(() => { }); }
+    if (tabKey === "kpi" || tabKey === "team") {
       msg.textContent = "Saving every period's KPI…"; await snapshotAllPeriods();
-      const cur = curMonth(), names = computeKpi(cur, S.entries).rows.map(r => r.name);
-      msg.textContent = "Deleting tasks…"; await Promise.all(freshPeriodTasks().map(p => del("plans", p.id)));
+      const end = periodBounds(curMonth()).end, cur = curMonth();
+      const doomed = tabKey === "team" ? (S.plans || []) : (S.plans || []).filter(p => p.status === "done" || !p.deadline || p.deadline <= end);
+      const names = computeKpi(cur, S.entries).rows.map(r => r.name);
+      msg.textContent = "Deleting tasks…"; await Promise.all(doomed.map(p => del("plans", p.id)));
       await Promise.all(names.map(n => deleteDoc(doc(db, "dash_kpi", cur, "editors", n)).catch(() => { })));
       Object.keys(kpiWritten).forEach(k => { if (k.startsWith(cur + "/")) delete kpiWritten[k]; });
+      if (tabKey === "kpi") await Promise.all(Object.keys(S.pauseReviews || {}).map(k => del("dash_pause_reviews", k)));
     }
-    clearFilters(t);
-    $("#resetPanel").hidden = true;
+    $("#rs-" + tabKey).hidden = true;
     renderAll();
-  } catch (e) { msg.textContent = "Something failed. Only leads can delete data."; go.disabled = false; go.textContent = "Reset"; }
+  } catch (e) { msg.textContent = "Something failed. Only leads can delete data."; btn.disabled = false; btn.textContent = "Delete everything"; btn.dataset.armed = ""; }
 }
-$("#resetView").addEventListener("click", openReset);
-$("#resetPanel").addEventListener("click", e => { if (e.target.id === "rsGo") runReset(); if (e.target.id === "rsCancel") $("#resetPanel").hidden = true; });
-$("#resetPanel").addEventListener("change", () => { const g = $("#rsGo"); if (g) { g.dataset.armed = ""; g.textContent = "Reset"; g.classList.remove("danger-solid"); } });
-$("#ssSave").addEventListener("click", saveSheetSetup);
-$("#ssLinkAll").addEventListener("click", () => document.querySelectorAll("[data-linktab]").forEach(c => { c.checked = c.closest(".tab-pick").classList.contains("none") ? c.checked : true; }));
-$("#ssLinkNone").addEventListener("click", () => document.querySelectorAll("[data-linktab]").forEach(c => { c.checked = false; }));
+const TAB_NAME = { overview: "Overview", projects: "Projects", deadlines: "Deadlines", links: "Links", mywork: "My work", kpi: "KPI", team: "Team", search: "search" };
+document.addEventListener("click", async e => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.srcOpen) { const k = t.dataset.srcOpen, box = $("#src-" + k); if (box.hidden) { renderSrcPanel(k); box.hidden = false; } else box.hidden = true; }
+  if (t.dataset.srcClose) $("#src-" + t.dataset.srcClose).hidden = true;
+  if (t.dataset.srcAll) { const k = t.dataset.srcAll; document.querySelectorAll("#src-" + k + " .tab-pick:not(.none) [data-src-tab]").forEach(c => { c.checked = true; }); }
+  if (t.dataset.srcNone) document.querySelectorAll("#src-" + t.dataset.srcNone + " [data-src-tab]").forEach(c => { c.checked = false; });
+  if (t.dataset.srcSave) {
+    const k = t.dataset.srcSave, ids = [...document.querySelectorAll("#src-" + k + " [data-src-tab]:checked")].map(c => c.dataset.srcTab), msg = document.querySelector("[data-src-msg=\"" + k + "\"]");
+    let extra = null;
+    if (k === "projects") { const pc = {}; document.querySelectorAll("#src-projects [data-proj-row]").forEach(tr => { const done = tr.querySelector(".ps-done").value, total = tr.querySelector(".ps-total").value, name = tr.querySelector(".ps-name").value.trim(); if (name || done !== "" || total !== "") pc[tr.dataset.projRow] = { name, done: done === "" ? null : +done, total: total === "" ? null : +total }; }); extra = { projectCfg: pc }; }
+    try { await saveSrc(k, ids, extra); msg.textContent = "Saved for everyone."; } catch (err) { msg.textContent = "Couldn't save. Only leads can change this."; }
+  }
+  if (t.dataset.rsOpen) openTabReset(t.dataset.rsOpen);
+  if (t.dataset.rsCancel) $("#rs-" + t.dataset.rsCancel).hidden = true;
+  if (t.dataset.rsGo) runTabReset(t.dataset.rsGo, t);
+});
 
 /* ---------- auth & live subscriptions ---------- */
 const provider = new GoogleAuthProvider();
@@ -969,13 +1009,13 @@ onAuthStateChanged(auth, async user => {
     if (!snap.exists()) return;
     try { const d = snap.data(); S.raw[k] = JSON.parse(d.payload); S.rawAt[k] = d.updatedAt && d.updatedAt.toMillis ? d.updatedAt.toMillis() : Date.now(); applySheets(); } catch (e) { console.warn("sheet parse", k, e); }
   }));
-  live(collection(db, "dash_deadlines"), s => { S.deadlines = s.docs.map(d => ({ id: d.id, ...d.data() })); renderOverview(); renderDeadlines(); });
+  live(collection(db, "dash_deadlines"), s => { S.deadlines = s.docs.map(d => ({ id: d.id, ...d.data() })); withOverviewData(renderOverview); renderDeadlines(); });
   live(doc(db, "dash_settings", "sources"), snap => { S.srcSettings = snap.exists() ? snap.data() : null; applySheets(); });
   live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
-  live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); renderOverview(); renderMyWork(); renderTeam(); renderSearch(); });
+  live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); });
   if (S.isLead) {
     live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });

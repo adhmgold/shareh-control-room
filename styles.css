@@ -236,3 +236,11 @@ button.btn.small-reset{padding:5px 12px;font-size:12px;box-shadow:0 2px 0 var(--
 .rs-opt span{display:flex;flex-direction:column;gap:1px}
 .rs-opt.none{opacity:.5}
 button.btn.danger-solid{background:var(--bad-fill);color:#fff}
+
+.tab-tools{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-bottom:12px}
+.rs-btn{border-color:var(--bad)!important;color:var(--bad)!important}
+.src-box{background:var(--surface);border:2px solid var(--ink);border-radius:14px;padding:14px 16px;box-shadow:0 3px 0 var(--line);margin-bottom:14px}
+.src-head{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+.src-sheet{margin-top:6px}
+.reset-box{margin-bottom:14px}
+.rs-list{margin:6px 0 4px;padding-inline-start:20px;font-size:13px;display:flex;flex-direction:column;gap:3px}
