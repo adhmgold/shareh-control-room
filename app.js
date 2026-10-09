@@ -631,7 +631,7 @@ function computeKpi(month, entries) {
   const words = excusedWords(), b = periodBounds(month), todayK = today(), now = new Date(), nowHM = pad(now.getHours()) + ":" + pad(now.getMinutes());
   const cfg = kpiCfg(), byId = {}; (S.plans || []).forEach(p => { byId[p.id] = p; });
   // fixes for the editor's own mistakes are not extra tasks; they're scored inside the original task
-  const tasks = (S.plans || []).filter(p => p.editor && p.deadline && p.deadline >= b.start && p.deadline <= b.end && !(p.revisionOf && p.fault === "editor"));
+  const tasks = (S.plans || []).filter(p => p.editor && p.deadline && p.deadline >= b.start && p.deadline <= b.end && p.status !== "dropped" && !(p.revisionOf && p.fault === "editor"));
   const penPerDay = Math.max(0, +cfg.penaltyPerDay || 0);
   const ents = entries.filter(e => e.editor && periodOf(e.date) === month);
   const names = [...new Set([...tasks.map(p => p.editor), ...ents.map(e => e.editor)])];
@@ -827,19 +827,35 @@ function setPauseDecision(key, decision) {
 
 
 /* ---------- daily plans (written by SS Tracker: plans/{id}) ---------- */
-const PLAN_PRIO = { high: 0, normal: 1, low: 2 }, PLAN_ST = { doing: 0, todo: 1, held: 2, done: 3 };
+const PLAN_PRIO = { high: 0, normal: 1, low: 2 }, PLAN_ST = { doing: 0, todo: 1, held: 2, done: 3, dropped: 4 };
+/* SS Tracker stores a plan as: date (day added), dueDate (YYYY-MM-DD), deadline (HH:MM time, optional), addedMidDay,
+   heldReason, status todo|done|dropped, doneAt, needsEditing, sheetStatus, assignedBy, source ('sheet' = Production Plan).
+   The dashboard works with: deadline = due date, deadlineTime, planDate, midDay, holdReason, status todo|doing|held|done|dropped.
+   Older docs already in the dashboard's shape are passed through. */
+const isYmd = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+function normPlan(id, d) {
+  const p = { id, ...d };
+  if (isYmd(d.deadline) && !d.dueDate) return p;
+  p.deadline = d.dueDate || d.date || "";
+  p.deadlineTime = /^\d{1,2}:\d{2}$/.test(String(d.deadline || "")) ? d.deadline : "";
+  p.planDate = d.date || "";
+  p.midDay = !!d.addedMidDay;
+  p.holdReason = d.heldReason || "";
+  if (d.status === "todo") p.status = d.heldReason ? "held" : (d.sheetStatus === "In progress" ? "doing" : "todo");
+  return p;
+}
 function planDue(p) {
   const t = today(); if (!p.deadline) return { late: false, label: "no deadline", cls: "" };
   const n = daysBetween(t, p.deadline); const now = new Date(), hm = pad(now.getHours()) + ":" + pad(now.getMinutes());
   const late = p.status !== "done" && (n < 0 || (n === 0 && p.deadlineTime && hm > p.deadlineTime));
   return { late, n, label: (late ? "overdue · " : "") + fmtDay(p.deadline) + (p.deadlineTime ? " " + p.deadlineTime : ""), cls: late ? "late" : n === 0 ? "soon" : "" };
 }
-function todaysPlans(list) { const t = today(); return list.filter(p => p.status !== "done" || (p.doneAt || "").slice(0, 10) === t); }
+function todaysPlans(list) { const t = today(); return list.filter(p => p.status !== "dropped" && (p.status !== "done" || (p.doneAt || "").slice(0, 10) === t)); }
 function planRow(p, withEditor) {
   const d = planDue(p);
   const st = { doing: "<span class=\"pill acc\">In progress</span>", todo: "<span class=\"pill\">Planned</span>", held: "<span class=\"pill warn\">On hold</span>", done: "<span class=\"pill ok\">Done</span>" }[p.status] || "";
   const prio = "<span class=\"pill " + (p.priority === "high" ? "bad" : p.priority === "low" ? "" : "warn") + "\">" + esc(p.priority || "normal") + "</span>";
-  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + (p.revisionOf ? " <span class=\"pill " + (p.fault === "editor" ? "bad" : "acc") + "\">Edits round " + (p.round || "") + "</span>" : "") + (S.isLead && p.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(p.id) + "\">Send back for edits</button>" : "") + "</td></tr>";
+  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + (p.assignedBy && !p.revisionOf ? " <span class=\"pill acc\">assigned by " + esc(p.assignedBy) + "</span>" : "") + (p.needsEditing && !p.revisionOf && p.status !== "done" ? " <span class=\"pill bad\">needs editing</span>" : "") + (p.revisionOf ? " <span class=\"pill " + (p.fault === "editor" ? "bad" : "acc") + "\">Edits round " + (p.round || "") + "</span>" : "") + (S.isLead && p.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(p.id) + "\">Send back for edits</button>" : "") + "</td></tr>";
 }
 function planTable(list, withEditor) {
   if (!list.length) return "<p class=\"empty\">No plan yet. Editors add their episodes in SS Tracker under “Today's plan”.</p>";
@@ -891,7 +907,11 @@ async function sendBack(form) {
   const fixRef = doc(collection(db, "plans"));
   const btn = form.querySelector("[type=submit]"); btn.disabled = true; $("#edMsg").textContent = "Sending…";
   try {
-    await setDoc(fixRef, { editor: p.editor, video: p.video, project: p.project || "", stage: p.stage || "", priority: $("#edPrio").value, deadline, deadlineTime, planDate: today(), createdAt: new Date().toISOString(), midDay: false, status: "todo", doneAt: null, startedAt: null, revisionOf: rootId, round, fault, severity, editReason: reason, editNote: note, sentBy: S.email });
+    // same shape SS Tracker writes, so the fix shows in the editor's plan (assigned + "needs editing", he can't remove it)
+    await setDoc(fixRef, { id: fixRef.id, editor: p.editor, date: today(), dueDate: deadline, video: p.video, project: p.project || "", stage: p.stage || "",
+      notes: "Edits round " + round + ": " + reason + (note ? " — " + note : ""), priority: $("#edPrio").value, deadline: deadlineTime, addedMidDay: false,
+      assignedBy: S.myName || (S.email || "").split("@")[0] || "Dashboard", createdAt: new Date().toISOString(), status: "todo", heldReason: "", doneAt: "", doneDate: "",
+      syncPending: false, needsEditing: true, revisionOf: rootId, round, fault, severity, editReason: reason, editNote: note, sentBy: S.email });
     await updateDoc(doc(db, "plans", rootId), { edits: [...edits, { round, fault, severity, reason, note, at: Date.now(), by: S.email, fixId: fixRef.id, fromId: p.id }] });
     $("#editDlg").hidden = true;
   } catch (err) { btn.disabled = false; $("#edMsg").textContent = "Couldn't send. Check your connection."; }
@@ -932,7 +952,7 @@ async function removeEdit(rootId, i) {
   const p = (S.plans || []).find(x => x.id === rootId); if (!p) return;
   const edits = editsOf(p).slice(), ed = edits[i]; edits.splice(i, 1);
   await updateDoc(doc(db, "plans", rootId), { edits }).catch(() => { });
-  if (ed && ed.fixId) deleteDoc(doc(db, "plans", ed.fixId)).catch(() => { });
+  if (ed && ed.fixId) { const f = (S.plans || []).find(x => x.id === ed.fixId); if (f && f.status === "done") return; deleteDoc(doc(db, "plans", ed.fixId)).catch(() => { }); }
 }
 $("#erList").addEventListener("change", e => { const s2 = e.target.closest("[data-er-set]"); if (s2) changeEdit(s2.dataset.erSet, +s2.dataset.i, s2.value); });
 $("#erList").addEventListener("click", e => { const t = e.target.closest("[data-er-del]"); if (t) { const id = t.dataset.erDel, i = +t.dataset.i; confirmIn(t.parentElement, "Remove this round and its fix task?", () => removeEdit(id, i)); } });
@@ -1164,11 +1184,11 @@ onAuthStateChanged(auth, async user => {
   if (S.isLead) {
     live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
-    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); renderKpi(); renderEditReview(); });
+    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); renderKpi(); renderEditReview(); });
     live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
-    live(query(collection(db, "plans"), where("editor", "==", S.myName)), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); });
+    live(query(collection(db, "plans"), where("editor", "==", S.myName)), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); });
   }
   S.kpiMonth = S.kpiMonth || curMonth();
   subscribeMyKpi();
