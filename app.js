@@ -155,8 +155,14 @@ function tabKinds(tab) {
   if (any(/episode code|lesson code|^videos$/i)) k.push(/re-?shoot/i.test(tab.name) ? "reshoot" : "tracker");
   if ((top[0] || []).some(v => /grade/i.test(v)) && (top[0] || []).some(v => /تسليم/.test(v))) k.push("timeline");
   if (top.some(r => r.some(v => /status|الحالة/i.test(v)) && r.some(v => /publish date|تاريخ النشر/i.test(v)))) k.push("calendar");
-  if (Object.keys(tab.links || {}).length) k.push("links");
+  if (tabLinkCount(tab)) k.push("links");
   return k;
+}
+const URL_RE = /https?:\/\/[^\s"'<>]+/i;
+function tabLinkCount(tab) {
+  const lk = tab.links || {}; let n = Object.keys(lk).length;
+  (tab.rows || []).forEach((r, i) => (r || []).forEach((v, c) => { if (!lk[i + "," + c] && URL_RE.test(cellStr(v))) n++; }));
+  return n;
 }
 const KIND_LABEL = { tracker: "Episode tracker", reshoot: "Re-shoots", timeline: "Delivery timeline", calendar: "Publishing calendar", links: "Links" };
 const SRC_TABS = { overview: "Overview", projects: "Projects", deadlines: "Deadlines", links: "Links" };
@@ -173,9 +179,11 @@ function srcCfg() {
 }
 function tabLinks(key, tab) {
   const out = [], rows = tab.rows || [], lk = tab.links || {};
-  Object.entries(lk).forEach(([rc, url]) => {
+  const all = { ...lk };
+  rows.forEach((r, i) => (r || []).forEach((v, c) => { const m = URL_RE.exec(cellStr(v)); if (m && !all[i + "," + c]) all[i + "," + c] = m[0].replace(/[),.]+$/, ""); }));
+  Object.entries(all).forEach(([rc, url]) => {
     const [r, c] = rc.split(",").map(Number); let title = cellStr((rows[r] || [])[c]);
-    if (!title || /^https?:/i.test(title) || /^link$|^اللينك$/i.test(title)) { const rowText = (rows[r] || []).map(cellStr).filter(v => v && !/^https?:/i.test(v) && v.length < 80); title = rowText.slice(0, 2).join(" · ") || url; }
+    if (!title || /https?:/i.test(title) || /^link$|^اللينك$/i.test(title)) { const rowText = (rows[r] || []).map(cellStr).filter(v => v && !/^https?:/i.test(v) && v.length < 80); title = rowText.slice(0, 2).join(" · ") || url; }
     out.push({ title: title.split("\n")[0].slice(0, 90), url, group: tab.name.trim(), src: SHEET_LABEL[key] || key });
   });
   return out;
@@ -464,7 +472,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderPlans(); renderResetBtn(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderPlans(); renderResetBtn(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -558,7 +566,7 @@ function episodeCard(e, logged) {
    Weights, target hours, working days and excused pause keywords are editable by leads (dash_settings/kpi). */
 const KPI_DEFAULTS = {
   weights: { deadlines: 30, output: 25, speed: 20, focus: 15, consistency: 10 },
-  targetHours: 6, workdays: [6, 0, 1, 2, 3, 4], minTakes: 3,
+  targetHours: 6, penaltyPerDay: 5, editMinor: 10, editMajor: 25, workdays: [6, 0, 1, 2, 3, 4], minTakes: 3,
   excused: "render, rendering, export, exporting, upload, رندر, ريندر, تصدير, اكسبورت, review, feedback, waiting, wait, مراجعة, مراجعه, فيدباك, كومنت, استنى, انتظار, meeting, meet, call, ميتنج, اجتماع, pray, prayer, salah, صلاة, صلاه, الصلاة, الصلاه"
 };
 const PART_LABEL = { deadlines: "Deadlines", output: "Output", speed: "Speed", focus: "Focus", consistency: "Consistency" };
@@ -581,6 +589,15 @@ function isExcused(reason, words) { const r = String(reason || "").toLowerCase()
      done after the deadline, or still not done once the deadline has passed = 0%
      deadline still ahead and not done yet = not counted yet
    An editor's KPI for the period = tasks on time ÷ tasks due in the period (by deadline date). */
+/* Task KPI scale (days counted from the deadline date):
+     finished on/before the deadline (same day, before the deadline time if one is set) = 100%
+     same day but after the deadline time = 85%
+     1 day late = 45%   2 days late = 10%   3 days late = 0%
+     4+ days late = 0%, and every extra day takes points off the editor's period KPI (KPI settings, default 5 per day)
+   Tasks not finished yet are scored the same way by how far past the deadline they already are. */
+const TASK_SCALE = [100, 45, 10, 0];
+function taskScore(lateDays, afterTime) { if (lateDays <= 0) return afterTime ? 85 : 100; return TASK_SCALE[Math.min(lateDays, 3)]; }
+function latePenaltyDays(lateDays) { return Math.max(0, lateDays - 3); }
 function taskResult(p, todayK, nowHM) {
   const doneDay = (p.doneAt || "").slice(0, 10);
   if (p.status === "done" && doneDay) {
@@ -591,9 +608,31 @@ function taskResult(p, todayK, nowHM) {
   if (p.deadline < todayK || (p.deadline === todayK && p.deadlineTime && nowHM > p.deadlineTime)) return "missed";
   return "pending";
 }
+/* ---------- edit rounds ("Send back for edits") ----------
+   A lead sends a finished task back. The edit round is saved on the ORIGINAL task (plans/{id}.edits[])
+   and a new fix task is added to the editor's plan (plans/{fixId} with revisionOf = original id).
+     Editor's fault:     the original task loses points (minor / major, KPI settings). The fix doesn't add a task;
+                         if the fix itself is late, what it loses on the normal scale also comes off the original task.
+     Not editor's fault: the original keeps its score. The fix is a new task scored on the normal scale. */
+const EDIT_REASONS = {
+  editor: ["Mistakes / typos", "Sync or audio problem", "Wrong or missing asset", "Didn't follow the brief or style guide", "Export / technical problem", "Other"],
+  other: ["Script or content changed", "Client or manager request", "Assets came late or wrong", "Style or direction changed", "Other"]
+};
+const editsOf = p => Array.isArray(p && p.edits) ? p.edits : [];
+const editPts = (ed, cfg) => ed.fault === "editor" ? (ed.severity === "major" ? +cfg.editMajor || 0 : +cfg.editMinor || 0) : 0;
+function fixOutcome(fix, todayK, nowHM, penPerDay) {
+  if (!fix || !fix.deadline) return { res: "pending", loss: 0, penalty: 0, late: 0 };
+  const res = taskResult(fix, todayK, nowHM), doneDay = (fix.doneAt || "").slice(0, 10);
+  const late = res === "late" ? daysBetween(fix.deadline, doneDay) : res === "missed" ? daysBetween(fix.deadline, todayK) : 0;
+  const score = res === "pending" ? 100 : res === "ontime" ? 100 : taskScore(late, true);
+  return { res, late, loss: 100 - score, penalty: res === "pending" ? 0 : latePenaltyDays(late) * penPerDay };
+}
 function computeKpi(month, entries) {
   const words = excusedWords(), b = periodBounds(month), todayK = today(), now = new Date(), nowHM = pad(now.getHours()) + ":" + pad(now.getMinutes());
-  const tasks = (S.plans || []).filter(p => p.editor && p.deadline && p.deadline >= b.start && p.deadline <= b.end);
+  const cfg = kpiCfg(), byId = {}; (S.plans || []).forEach(p => { byId[p.id] = p; });
+  // fixes for the editor's own mistakes are not extra tasks; they're scored inside the original task
+  const tasks = (S.plans || []).filter(p => p.editor && p.deadline && p.deadline >= b.start && p.deadline <= b.end && !(p.revisionOf && p.fault === "editor"));
+  const penPerDay = Math.max(0, +cfg.penaltyPerDay || 0);
   const ents = entries.filter(e => e.editor && periodOf(e.date) === month);
   const names = [...new Set([...tasks.map(p => p.editor), ...ents.map(e => e.editor)])];
   const rows = names.map(name => {
@@ -601,10 +640,25 @@ function computeKpi(month, entries) {
       const res = taskResult(p, todayK, nowHM);
       const doneDay = (p.doneAt || "").slice(0, 10);
       const late = res === "late" ? daysBetween(p.deadline, doneDay) : res === "missed" ? daysBetween(p.deadline, todayK) : 0;
-      return { video: p.video, project: p.project || "", stage: p.stage || "", priority: p.priority || "normal", deadline: p.deadline, deadlineTime: p.deadlineTime || "", done: doneDay, res, late, kpi: res === "ontime" ? 100 : res === "pending" ? null : 0, midDay: !!p.midDay };
+      const timing = res === "pending" ? null : res === "ontime" ? 100 : taskScore(late, true);
+      let penalty = res === "pending" ? 0 : latePenaltyDays(late) * penPerDay;
+      const edits = editsOf(p).map(ed => {
+        const fix = byId[ed.fixId], o = ed.fault === "editor" ? fixOutcome(fix, todayK, nowHM, penPerDay) : { res: fix ? taskResult(fix, todayK, nowHM) : "pending", loss: 0, penalty: 0, late: 0 };
+        const pts = editPts(ed, cfg);
+        penalty += o.penalty;
+        return { round: ed.round, fault: ed.fault, severity: ed.severity || "", reason: ed.reason || "", note: ed.note || "", at: ed.at, fixId: ed.fixId || "", fixDeadline: fix ? fix.deadline : "", fixDeadlineTime: fix ? fix.deadlineTime || "" : "", fixStatus: fix ? fix.status : "removed", fixRes: o.res, fixLate: o.late, pts, fixLoss: o.loss };
+      });
+      const editOff = edits.reduce((a, e) => a + e.pts + e.fixLoss, 0);
+      const kpi = timing == null ? null : Math.max(0, timing - editOff);
+      return { id: p.id, status: p.status, video: p.video, project: p.project || "", stage: p.stage || "", priority: p.priority || "normal", deadline: p.deadline, deadlineTime: p.deadlineTime || "", done: doneDay, res, late, timing, kpi, penalty, midDay: !!p.midDay, edits, editOff, fixOf: p.revisionOf || "", round: p.round || 0, fault: p.fault || "", editReason: p.editReason || "" };
     });
     const counted = mine.filter(t => t.res !== "pending");
     const onTime = counted.filter(t => t.res === "ontime").length;
+    const avg = counted.length ? counted.reduce((a, t) => a + t.kpi, 0) / counted.length : null;
+    const penalty = counted.reduce((a, t) => a + t.penalty, 0);
+    const originals = counted.filter(t => !t.fixOf && t.status === "done");
+    const editsFault = mine.reduce((a, t) => a + t.edits.filter(e => e.fault === "editor").length, 0), editsOther = mine.reduce((a, t) => a + t.edits.filter(e => e.fault !== "editor").length, 0);
+    const firstPassOk = originals.filter(t => !t.edits.some(e => e.fault === "editor")).length;
     const list = ents.filter(e => e.editor === name);
     let cP = 0, eP = 0, cMin = 0, eMin = 0, hC = 0, hE = 0; const reasons = {};
     list.forEach(e => (Array.isArray(e.pauses) ? e.pauses : []).forEach((p, i) => {
@@ -618,7 +672,8 @@ function computeKpi(month, entries) {
     return {
       name, tasks: mine, total: mine.length, counted: counted.length, onTime,
       late: counted.filter(t => t.res === "late").length, missed: counted.filter(t => t.res === "missed").length, pending: mine.filter(t => t.res === "pending").length,
-      score: counted.length ? 100 * onTime / counted.length : null, enough: counted.length > 0,
+      avg, penalty, score: avg == null ? null : Math.max(0, avg - penalty), enough: counted.length > 0,
+      editsFault, editsOther, firstPassOk, firstPassOf: originals.length, firstPass: originals.length ? 100 * firstPassOk / originals.length : null,
       takes: list.length, hours: list.reduce((a, e) => a + entryHours(e), 0), videos: new Set(list.map(e => compact(e.video))).size,
       countedPauses: cP, excusedPauses: eP, countedMin: cMin, excusedMin: eMin, countedHolds: hC, excusedHolds: hE,
       activeDays: Object.keys(daily).length, daily, reasons
@@ -638,9 +693,11 @@ const pctTxt = v => v == null ? "—" : Math.round(v) + "%";
 function kpiCard(r, prev) {
   const d = prev && prev.score != null && r.score != null ? r.score - prev.score : null;
   return "<div class=\"kpi-card\"><div class=\"kpi-big\"><span class=\"lab\">KPI</span><span class=\"val " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span>" +
-    (r.counted ? "<span class=\"meta\">" + r.onTime + " of " + r.counted + " tasks on time</span>" : "<span class=\"meta\">No tasks due yet this period</span>") +
+    (r.counted ? "<span class=\"meta\">" + r.onTime + " of " + r.counted + " tasks on time</span><span class=\"meta\">Task average " + Math.round(r.avg) + "%" + (r.penalty ? " − " + r.penalty + " pts late deductions" : "") + "</span>" : "<span class=\"meta\">No tasks due yet this period</span>") +
     (d == null ? "" : "<span class=\"meta\">" + (d >= 0 ? "▲ " : "▼ ") + Math.abs(Math.round(d)) + " pts vs last period</span>") + "</div>" +
     "<div class=\"facts\">" + fact("On time", "<span class=\"pill ok\">" + r.onTime + "</span>") + fact("Late", "<span class=\"pill bad\">" + r.late + "</span>") + fact("Not done, past deadline", "<span class=\"pill bad\">" + r.missed + "</span>") + fact("Still upcoming", String(r.pending)) +
+    fact("Edits, his fault", (r.editsFault ? "<span class=\"pill bad\">" + r.editsFault + "</span>" : "0") + (r.editsOther ? " · " + r.editsOther + " not his fault" : "")) +
+    fact("First-time approval", r.firstPassOf ? Math.round(r.firstPass) + "% <span class=\"meta\">(" + r.firstPassOk + " of " + r.firstPassOf + " finished videos with no edits from his mistakes)</span>" : "—") +
     fact("Hours logged", fmtH(r.hours)) + fact("Active days", String(r.activeDays)) +
     fact("Pauses", r.countedPauses + " not excused (" + Math.round(r.countedMin) + " min) · " + r.excusedPauses + " excused") + fact("Holds", r.countedHolds + " not excused · " + r.excusedHolds + " excused") + "</div></div>";
 }
@@ -649,11 +706,19 @@ function kpiDetail(r) {
   const days = Object.keys(r.daily || {}); const mx = Math.max(1, ...days.map(k => r.daily[k].hours));
   const bw = 16, H = 90;
   const bars = all.map((k, i) => { const v = (r.daily || {})[k]; const h = v ? Math.max(2, (v.hours / mx) * (H - 20)) : 0; return (v ? "<rect x=\"" + (i * bw + 2) + "\" y=\"" + (H - 14 - h) + "\" width=\"" + (bw - 4) + "\" height=\"" + h + "\" rx=\"2\" fill=\"var(--accent)\"><title>" + fmtDay(k) + ": " + v.takes + " takes · " + fmtH(v.hours) + "</title></rect><text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 16 - h) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + v.takes + "</text>" : "") + (i % 5 === 0 ? "<text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 2) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + fmtDay(k) + "</text>" : ""); }).join("");
-  const RES = { ontime: "<span class=\"pill ok\">On time · 100%</span>", late: x => "<span class=\"pill bad\">Late " + (x.late ? x.late + "d" : "· after " + esc(x.deadlineTime)) + " · 0%</span>", missed: x => "<span class=\"pill bad\">Not done · " + x.late + "d past · 0%</span>", pending: "<span class=\"pill\">Upcoming · not counted yet</span>" };
+  const pc = v => v >= 85 ? "ok" : v >= 45 ? "warn" : "bad";
+  const pen = x => x.penalty ? " <span class=\"pill bad\">−" + x.penalty + " pts from KPI</span>" : "";
+  const RES = { ontime: "<span class=\"pill ok\">On time · 100%</span>", late: x => "<span class=\"pill " + pc(x.timing) + "\">" + (x.late ? x.late + "d late" : "After " + esc(x.deadlineTime)) + " · " + x.timing + "%</span>" + pen(x), missed: x => "<span class=\"pill " + pc(x.kpi) + "\">Not done · " + (x.late ? x.late + "d past" : "past " + esc(x.deadlineTime)) + " · " + x.timing + "%</span>" + pen(x), pending: "<span class=\"pill\">Upcoming · not counted yet</span>" };
   const reasons = Object.entries(r.reasons || {}).sort((a, b2) => b2[1].min - a[1].min).slice(0, 12);
+  const fixTag = x => x.fixOf ? " <span class=\"pill acc\">Edits round " + (x.round || "") + " · not his fault</span>" + (x.editReason ? " <span class=\"meta\" dir=\"auto\">" + esc(x.editReason) + "</span>" : "") : "";
+  const editLines = x => (x.edits || []).map(e => "<div class=\"edit-line\"><span class=\"pill " + (e.fault === "editor" ? "bad" : "acc") + "\">Round " + e.round + " · " + (e.fault === "editor" ? "his fault · " + (e.severity || "minor") : "not his fault") + "</span> <span dir=\"auto\">" + esc(e.reason) + (e.note ? " — " + esc(e.note) : "") + "</span>" +
+    (e.fault === "editor" ? " <span class=\"meta\">−" + e.pts + " pts" + (e.fixLoss ? " · fix late " + (e.fixLate ? e.fixLate + "d" : "after time") + " −" + e.fixLoss : "") + "</span>" : "") +
+    " <span class=\"meta\">fix " + (e.fixStatus === "done" ? "done" : e.fixStatus === "removed" ? "removed" : "due " + (e.fixDeadline ? fmtDay(e.fixDeadline) + (e.fixDeadlineTime ? " " + esc(e.fixDeadlineTime) : "") : "—")) + "</span></div>").join("");
+  const sendBtn = x => S.isLead && x.id && x.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(x.id) + "\">Send back for edits</button>" : "";
+  const kpiCell = x => (typeof RES[x.res] === "function" ? RES[x.res](x) : RES[x.res]) + (x.editOff && x.kpi != null ? " <span class=\"pill " + pc(x.kpi) + "\">after edits · " + Math.round(x.kpi) + "%</span>" : "");
   return "<h2>" + esc(r.name) + " · " + esc(monthLabel(S.kpiMonth)) + "</h2>" +
     "<h3 class=\"sub-h\">Tasks in this period <span class=\"meta\">(each task's own KPI)</span></h3>" + ((r.tasks || []).length ? "<div class=\"tscroll\"><table><thead><tr><th>Episode</th><th>Project · stage</th><th>Priority</th><th>Deadline</th><th>Finished</th><th>Task KPI</th></tr></thead><tbody>" +
-      r.tasks.slice().sort((a, b2) => a.deadline.localeCompare(b2.deadline)).map(x => "<tr><td class=\"code\">" + esc(x.video) + (x.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + "</td><td>" + esc(x.project) + " · " + esc(x.stage) + "</td><td>" + esc(x.priority) + "</td><td class=\"code\">" + fmtDay(x.deadline) + (x.deadlineTime ? " " + esc(x.deadlineTime) : "") + "</td><td class=\"code\">" + (x.done ? fmtDay(x.done) : "—") + "</td><td>" + (typeof RES[x.res] === "function" ? RES[x.res](x) : RES[x.res]) + "</td></tr>").join("") + "</tbody></table></div>"
+      r.tasks.slice().sort((a, b2) => a.deadline.localeCompare(b2.deadline)).map(x => "<tr><td class=\"code\">" + esc(x.video) + (x.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + fixTag(x) + "</td><td>" + esc(x.project) + " · " + esc(x.stage) + "</td><td>" + esc(x.priority) + "</td><td class=\"code\">" + fmtDay(x.deadline) + (x.deadlineTime ? " " + esc(x.deadlineTime) : "") + "</td><td class=\"code\">" + (x.done ? fmtDay(x.done) : "—") + "</td><td>" + kpiCell(x) + sendBtn(x) + editLines(x) + "</td></tr>").join("") + "</tbody></table></div>"
       : "<p class=\"empty\">No tasks with a deadline in this period. Editors add tasks in SS Tracker under “Today's plan”.</p>") +
     "<h3 class=\"sub-h\">Hours and takes per day <span class=\"meta\">(number above each bar = takes)</span></h3><div class=\"tscroll\"><svg viewBox=\"0 0 " + (all.length * bw + 4) + " " + H + "\" width=\"" + (all.length * bw + 4) + "\" height=\"" + H + "\" role=\"img\" aria-label=\"Hours per day\">" + bars + "</svg></div>" +
     "<h3 class=\"sub-h\">Pause and hold reasons</h3>" + (reasons.length ? "<ul class=\"list\">" + reasons.map(([k, v]) => "<li><span class=\"grow\" dir=\"auto\">" + esc(k) + " " + (v.ex ? "<span class=\"pill ok\">excused</span>" : "") + "</span><span class=\"meta\">" + v.n + "×" + (v.min ? " · " + Math.round(v.min) + " min" : "") + "</span></li>").join("") + "</ul>" : "<p class=\"empty\">No pauses or holds this period.</p>");
@@ -664,8 +729,11 @@ function renderKpi() {
   const sel = $("#kpiMonth"); if (!sel.options.length || sel.dataset.m !== kpiMonths()[0]) { sel.innerHTML = kpiMonths().map(m => "<option value=\"" + m + "\">" + monthLabel(m) + (m === curMonth() ? " (current)" : "") + "</option>").join(""); sel.dataset.m = kpiMonths()[0]; }
   sel.value = S.kpiMonth;
   $("#kpiHow").innerHTML = "<h2>How the KPI works</h2><div class=\"facts\">" +
-    fact("Each task", "A task from Today's plan in SS Tracker. Finished on or before its deadline (and time, if set) = 100%. Finished late, or not finished once the deadline passes = 0%.") +
-    fact("The period's KPI", "Tasks on time ÷ all tasks due in the period. All on time = 100%. None on time = 0%.") +
+    fact("Each task", "On time or the same day = 100%. Same day but after the deadline time = 85%. 1 day late = 45%. 2 days late = 10%. 3 days late = 0%. Unfinished tasks are scored by how late they already are.") +
+    fact("After 3 days", "From the 4th day late, every extra day takes " + kpiCfg().penaltyPerDay + " points off the editor's KPI for the period, until the task is finished.") +
+    fact("Edits, his fault", "Mistakes, sync, wrong asset, not following the brief. The original task loses " + kpiCfg().editMinor + " points for a minor round and " + kpiCfg().editMajor + " for a major one. The fix doesn't add a task; if the fix is late, what it loses on the scale above also comes off the original task.") +
+    fact("Edits, not his fault", "Script or content changes, client requests, late assets. The original keeps its score, and the fix is a new task scored like any other.") +
+    fact("The period's KPI", "Average of all task scores in the period (after edit deductions), minus late-day deductions (never below 0%).") +
     fact("Period", "From the 25th of one month to the 24th of the next. Tasks belong to the period their deadline falls in.") +
     fact("Upcoming tasks", "Tasks whose deadline hasn't arrived and aren't done yet don't count until they're finished or overdue.") +
     "</div><p class=\"meta\">The current period updates live. Pauses, holds and hours are shown for context; they don't change the KPI.</p>";
@@ -677,10 +745,10 @@ function renderKpi() {
     const trend = {}; trendMonths.forEach(m => fromSnap(m).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.score; }));
     const teamOn = res.rows.reduce((a, r) => a + r.onTime, 0), teamCounted = res.rows.reduce((a, r) => a + r.counted, 0);
     $("#kpiAsOf").textContent = res.rows.length + " editors · team " + (teamCounted ? Math.round(100 * teamOn / teamCounted) + "% on time (" + teamOn + "/" + teamCounted + ")" : "no tasks due yet");
-    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">KPI</th><th style=\"text-align:end\">Tasks due</th><th style=\"text-align:end\">On time</th><th style=\"text-align:end\">Late</th><th style=\"text-align:end\">Not done</th><th style=\"text-align:end\">Upcoming</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Holds</th><th>6 periods</th></tr></thead><tbody>" +
+    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">KPI</th><th style=\"text-align:end\">Tasks due</th><th style=\"text-align:end\">On time</th><th style=\"text-align:end\">Late</th><th style=\"text-align:end\">Not done</th><th style=\"text-align:end\">Upcoming</th><th style=\"text-align:end\">Deducted</th><th style=\"text-align:end\">Edits</th><th style=\"text-align:end\">1st-time OK</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Holds</th><th>6 periods</th></tr></thead><tbody>" +
       res.rows.map((r, i) => { const p = prev.rows.find(x => x.name === r.name); const d = p && p.score != null && r.score != null ? Math.round(r.score - p.score) : null;
-        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b></td><td class=\"n\">" + (r.score == null ? "<span class=\"meta\">no tasks yet</span>" : "<span class=\"score " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span>") + "</td><td class=\"n\">" + r.counted + "</td><td class=\"n\"><span class=\"up\">" + r.onTime + "</span></td><td class=\"n\">" + (r.late ? "<span class=\"down\">" + r.late + "</span>" : "·") + "</td><td class=\"n\">" + (r.missed ? "<span class=\"down\">" + r.missed + "</span>" : "·") + "</td><td class=\"n\">" + (r.pending || "·") + "</td><td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.countedHolds + "<span class=\"meta\"> +" + r.excusedHolds + "</span></td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
-      "</tbody></table></div><p class=\"meta\">Click an editor to see every task and its KPI. Pauses and holds: not excused <span class=\"meta\">+ excused</span>.</p>" : "<p class=\"empty\">No tasks or takes in " + esc(monthLabel(S.kpiMonth)) + ".</p>";
+        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b></td><td class=\"n\">" + (r.score == null ? "<span class=\"meta\">no tasks yet</span>" : "<span class=\"score " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span>") + "</td><td class=\"n\">" + r.counted + "</td><td class=\"n\"><span class=\"up\">" + r.onTime + "</span></td><td class=\"n\">" + (r.late ? "<span class=\"down\">" + r.late + "</span>" : "·") + "</td><td class=\"n\">" + (r.missed ? "<span class=\"down\">" + r.missed + "</span>" : "·") + "</td><td class=\"n\">" + (r.pending || "·") + "</td><td class=\"n\">" + (r.penalty ? "<span class=\"down\">−" + r.penalty + "</span>" : "·") + "</td><td class=\"n\">" + (r.editsFault ? "<span class=\"down\">" + r.editsFault + "</span>" : "·") + (r.editsOther ? "<span class=\"meta\"> +" + r.editsOther + "</span>" : "") + "</td><td class=\"n\">" + (r.firstPass == null ? "·" : Math.round(r.firstPass) + "%") + "</td><td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.countedHolds + "<span class=\"meta\"> +" + r.excusedHolds + "</span></td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
+      "</tbody></table></div><p class=\"meta\">Click an editor to see every task and its KPI. Pauses and holds: not excused <span class=\"meta\">+ excused</span>. Edits: his fault <span class=\"meta\">+ not his fault</span>.</p>" : "<p class=\"empty\">No tasks or takes in " + esc(monthLabel(S.kpiMonth)) + ".</p>";
     const open = res.rows.find(r => r.name === S.kpiOpen);
     $("#kpiDetail").hidden = !open; $("#kpiDetail").innerHTML = open ? kpiCard(open, prev.rows.find(x => x.name === open.name)) + kpiDetail(open) : "";
     fillKpiSettings();
@@ -695,7 +763,7 @@ function renderKpi() {
 }
 function fillKpiSettings() {
   const f = $("#kpiSettingsForm"); if (f.dataset.filled === JSON.stringify(S.kpiSettings || {})) return;
-  $("#kExcused").value = kpiCfg().excused;
+  $("#kExcused").value = kpiCfg().excused; $("#kPenalty").value = kpiCfg().penaltyPerDay; $("#kMinor").value = kpiCfg().editMinor; $("#kMajor").value = kpiCfg().editMajor;
   f.dataset.filled = JSON.stringify(S.kpiSettings || {});
 }
 
@@ -771,7 +839,7 @@ function planRow(p, withEditor) {
   const d = planDue(p);
   const st = { doing: "<span class=\"pill acc\">In progress</span>", todo: "<span class=\"pill\">Planned</span>", held: "<span class=\"pill warn\">On hold</span>", done: "<span class=\"pill ok\">Done</span>" }[p.status] || "";
   const prio = "<span class=\"pill " + (p.priority === "high" ? "bad" : p.priority === "low" ? "" : "warn") + "\">" + esc(p.priority || "normal") + "</span>";
-  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + "</td></tr>";
+  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + (p.revisionOf ? " <span class=\"pill " + (p.fault === "editor" ? "bad" : "acc") + "\">Edits round " + (p.round || "") + "</span>" : "") + (S.isLead && p.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(p.id) + "\">Send back for edits</button>" : "") + "</td></tr>";
 }
 function planTable(list, withEditor) {
   if (!list.length) return "<p class=\"empty\">No plan yet. Editors add their episodes in SS Tracker under “Today's plan”.</p>";
@@ -791,6 +859,83 @@ function renderPlans() {
   const sel = S.planEd && eds.includes(S.planEd) ? S.planEd : "";
   $("#teamPlanList").innerHTML = "<h3 class=\"sub-h\">" + (sel ? esc(sel) + "'s plan" : "All plans") + (sel ? " <button class=\"link\" type=\"button\" data-plan-ed=\"\">show everyone</button>" : "") + "</h3>" + planTable(all.filter(p => !sel || p.editor === sel), !sel);
 }
+
+/* ---------- send back for edits: dialog ---------- */
+function openSendBack(id) {
+  const p = (S.plans || []).find(x => x.id === id); if (!p) return;
+  const dlg = $("#editDlg"), t = new Date(); t.setDate(t.getDate() + 1);
+  const root = (S.plans || []).find(x => x.id === (p.revisionOf || p.id)) || p, round = editsOf(root).length + 1;
+  const opts = k => EDIT_REASONS[k].map(r => "<option>" + esc(r) + "</option>").join("");
+  dlg.innerHTML = "<div class=\"modal-box\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"edH\"><h2 id=\"edH\">Send back for edits <span class=\"aside\">round " + round + "</span></h2>" +
+    "<p class=\"meta\"><b>" + esc(p.video) + "</b> · " + esc(p.project || "") + " · " + esc(p.stage || "") + " · " + esc(p.editor) + "</p>" +
+    "<form id=\"edForm\" class=\"ed-form\" data-id=\"" + esc(id) + "\">" +
+    "<fieldset class=\"ed-fault\"><legend>Whose fault?</legend>" +
+    "<label><input type=\"radio\" name=\"edFault\" value=\"editor\" checked> His fault <span class=\"meta\">(mistakes: counts against his KPI)</span></label>" +
+    "<label><input type=\"radio\" name=\"edFault\" value=\"other\"> Not his fault <span class=\"meta\">(changes, client, assets: no points off)</span></label></fieldset>" +
+    "<fieldset class=\"ed-sev\" id=\"edSevBox\"><legend>How big?</legend>" +
+    "<label><input type=\"radio\" name=\"edSev\" value=\"minor\" checked> Minor <span class=\"meta\">(−" + kpiCfg().editMinor + " pts)</span></label>" +
+    "<label><input type=\"radio\" name=\"edSev\" value=\"major\"> Major <span class=\"meta\">(−" + kpiCfg().editMajor + " pts)</span></label></fieldset>" +
+    "<label class=\"f\">Reason<select id=\"edReason\" data-editor=\"" + esc(opts("editor")) + "\" data-other=\"" + esc(opts("other")) + "\">" + opts("editor") + "</select></label>" +
+    "<label class=\"f\">Notes for the editor<textarea id=\"edNote\" rows=\"2\" dir=\"auto\" placeholder=\"What needs fixing (timecodes, Frame.io link…)\"></textarea></label>" +
+    "<div class=\"inline-row\"><label class=\"f\">Fix deadline<input id=\"edDate\" type=\"date\" required value=\"" + ymd(t) + "\"></label><label class=\"f\">Time (optional)<input id=\"edTime\" type=\"time\"></label>" +
+    "<label class=\"f\">Priority<select id=\"edPrio\"><option value=\"high\">high</option><option value=\"normal\" selected>normal</option><option value=\"low\">low</option></select></label></div>" +
+    "<div class=\"inline-row\"><button class=\"btn\" type=\"submit\">Send back</button><button class=\"btn ghost\" type=\"button\" data-ed-close>Cancel</button><span class=\"meta\" id=\"edMsg\"></span></div></form></div>";
+  dlg.hidden = false; $("#edNote").focus();
+}
+async function sendBack(form) {
+  const id = form.dataset.id, p = (S.plans || []).find(x => x.id === id); if (!p) return;
+  const rootId = p.revisionOf || p.id, root = (S.plans || []).find(x => x.id === rootId) || p, edits = editsOf(root), round = edits.length + 1;
+  const fault = form.querySelector("[name=edFault]:checked").value, severity = fault === "editor" ? form.querySelector("[name=edSev]:checked").value : "";
+  const reason = $("#edReason").value, note = $("#edNote").value.trim(), deadline = $("#edDate").value, deadlineTime = $("#edTime").value || "";
+  if (!deadline) { $("#edMsg").textContent = "Pick a deadline for the fix."; return; }
+  const fixRef = doc(collection(db, "plans"));
+  const btn = form.querySelector("[type=submit]"); btn.disabled = true; $("#edMsg").textContent = "Sending…";
+  try {
+    await setDoc(fixRef, { editor: p.editor, video: p.video, project: p.project || "", stage: p.stage || "", priority: $("#edPrio").value, deadline, deadlineTime, planDate: today(), createdAt: new Date().toISOString(), midDay: false, status: "todo", doneAt: null, startedAt: null, revisionOf: rootId, round, fault, severity, editReason: reason, editNote: note, sentBy: S.email });
+    await updateDoc(doc(db, "plans", rootId), { edits: [...edits, { round, fault, severity, reason, note, at: Date.now(), by: S.email, fixId: fixRef.id, fromId: p.id }] });
+    $("#editDlg").hidden = true;
+  } catch (err) { btn.disabled = false; $("#edMsg").textContent = "Couldn't send. Check your connection."; }
+}
+$("#editDlg").addEventListener("change", e => {
+  if (e.target.name === "edFault") { const k = e.target.value, sel = $("#edReason"); sel.innerHTML = sel.dataset[k]; $("#edSevBox").hidden = k !== "editor"; }
+});
+$("#editDlg").addEventListener("submit", e => { e.preventDefault(); sendBack(e.target); });
+$("#editDlg").addEventListener("click", e => { if (e.target.id === "editDlg" || e.target.closest("[data-ed-close]")) $("#editDlg").hidden = true; });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#editDlg").hidden) $("#editDlg").hidden = true; });
+document.addEventListener("click", e => { const b = e.target.closest("[data-sendback]"); if (b) { e.stopPropagation(); openSendBack(b.dataset.sendback); } }, true);
+
+/* ---------- edit rounds review (leads) ---------- */
+function renderEditReview() {
+  const panel = $("#editReview"); if (!S.isLead) { panel.hidden = true; return; } panel.hidden = false;
+  const b = periodBounds(S.kpiMonth || curMonth()), byId = {}; (S.plans || []).forEach(p => { byId[p.id] = p; });
+  const rows = []; (S.plans || []).filter(p => p.deadline >= b.start && p.deadline <= b.end).forEach(p => editsOf(p).forEach((ed, i) => rows.push({ p, ed, i, fix: byId[ed.fixId] })));
+  rows.sort((a, c) => (c.ed.at || 0) - (a.ed.at || 0));
+  const cfg = kpiCfg();
+  $("#erList").innerHTML = rows.length ? "<div class=\"tscroll\"><table><thead><tr><th>Sent</th><th>Editor</th><th>Episode</th><th>Round</th><th>Whose fault</th><th>Reason</th><th>Fix</th><th style=\"text-align:end\">Points off</th><th></th></tr></thead><tbody>" + rows.map(({ p, ed, i, fix }) => {
+    const v = ed.fault === "editor" ? "editor-" + (ed.severity || "minor") : "other";
+    return "<tr><td class=\"code\">" + (ed.at ? fmtDay(ymd(new Date(ed.at))) : "—") + "</td><td>" + esc(p.editor) + "</td><td class=\"code\">" + esc(p.video) + " <span class=\"meta\">" + esc(p.stage || "") + "</span></td><td class=\"n\">" + ed.round + "</td>" +
+      "<td><select data-er-set=\"" + esc(p.id) + "\" data-i=\"" + i + "\" aria-label=\"Whose fault\"><option value=\"editor-minor\"" + (v === "editor-minor" ? " selected" : "") + ">His fault · minor</option><option value=\"editor-major\"" + (v === "editor-major" ? " selected" : "") + ">His fault · major</option><option value=\"other\"" + (v === "other" ? " selected" : "") + ">Not his fault</option></select></td>" +
+      "<td dir=\"auto\">" + esc(ed.reason || "") + (ed.note ? "<div class=\"meta\">" + esc(ed.note) + "</div>" : "") + "</td>" +
+      "<td>" + (!fix ? "<span class=\"meta\">removed</span>" : fix.status === "done" ? "<span class=\"pill ok\">Done " + fmtDay((fix.doneAt || "").slice(0, 10)) + "</span>" : "<span class=\"when " + planDue(fix).cls + "\">" + esc(planDue(fix).label) + "</span>") + "</td>" +
+      "<td class=\"n\">" + (ed.fault === "editor" ? "<span class=\"down\">−" + editPts(ed, cfg) + "</span>" : "·") + "</td>" +
+      "<td><span><button class=\"link\" type=\"button\" data-er-del=\"" + esc(p.id) + "\" data-i=\"" + i + "\">Remove</button></span></td></tr>";
+  }).join("") + "</tbody></table></div>" : "<p class=\"empty\">No edits sent back in " + esc(monthLabel(S.kpiMonth || curMonth())) + ". Use “Send back for edits” on a finished task (click an editor above, or in Team → Today's plans).</p>";
+}
+async function changeEdit(rootId, i, val) {
+  const p = (S.plans || []).find(x => x.id === rootId); if (!p) return;
+  const edits = editsOf(p).slice(), ed = { ...edits[i] }; if (!ed) return;
+  ed.fault = val === "other" ? "other" : "editor"; ed.severity = val === "other" ? "" : val.split("-")[1]; ed.changedBy = S.email; edits[i] = ed;
+  await updateDoc(doc(db, "plans", rootId), { edits }).catch(() => { });
+  if (ed.fixId) updateDoc(doc(db, "plans", ed.fixId), { fault: ed.fault, severity: ed.severity }).catch(() => { });
+}
+async function removeEdit(rootId, i) {
+  const p = (S.plans || []).find(x => x.id === rootId); if (!p) return;
+  const edits = editsOf(p).slice(), ed = edits[i]; edits.splice(i, 1);
+  await updateDoc(doc(db, "plans", rootId), { edits }).catch(() => { });
+  if (ed && ed.fixId) deleteDoc(doc(db, "plans", ed.fixId)).catch(() => { });
+}
+$("#erList").addEventListener("change", e => { const s2 = e.target.closest("[data-er-set]"); if (s2) changeEdit(s2.dataset.erSet, +s2.dataset.i, s2.value); });
+$("#erList").addEventListener("click", e => { const t = e.target.closest("[data-er-del]"); if (t) { const id = t.dataset.erDel, i = +t.dataset.i; confirmIn(t.parentElement, "Remove this round and its fix task?", () => removeEdit(id, i)); } });
 
 /* ---------- UI events ---------- */
 function showTab(v) { document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
@@ -817,7 +962,7 @@ $("#calPrev").addEventListener("click", () => { S.calMonth = new Date(S.calMonth
 $("#calNext").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() + 1, 1); renderDeadlines(); });
 $("#teamPick").addEventListener("change", renderTeam);
 $("#v-team").addEventListener("click", e => { const r = e.target.closest("[data-plan-ed]"); if (r) { S.planEd = r.dataset.planEd; renderPlans(); } });
-$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); renderKpi(); renderPauseReview(); });
+$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); renderKpi(); renderPauseReview(); renderEditReview(); });
 $("#kpiBody").addEventListener("click", e => { const tr = e.target.closest("[data-kpi]"); if (tr) { S.kpiOpen = S.kpiOpen === tr.dataset.kpi ? null : tr.dataset.kpi; renderKpi(); if (S.kpiOpen) $("#kpiDetail").scrollIntoView({ behavior: "smooth", block: "start" }); } });
 $("#prStatus").addEventListener("click", e => { const b = e.target.closest("[data-pr]"); if (b) { S.prFilter.status = b.dataset.pr; renderPauseReview(); } });
 $("#prEditor").addEventListener("change", e => { S.prFilter.editor = e.target.value; renderPauseReview(); });
@@ -833,7 +978,7 @@ $("#prBulk").addEventListener("click", async e => {
 });
 $("#kpiSettingsForm").addEventListener("submit", async e => {
   e.preventDefault();
-  try { await setDoc(doc(db, "dash_settings", "kpi"), { excused: $("#kExcused").value, by: S.email, at: Date.now() }, { merge: true }); $("#kSaveMsg").textContent = "Saved."; } catch (err) { $("#kSaveMsg").textContent = "Couldn't save. Only leads can change this."; }
+  try { await setDoc(doc(db, "dash_settings", "kpi"), { excused: $("#kExcused").value, penaltyPerDay: Math.max(0, +$("#kPenalty").value || 0), editMinor: Math.max(0, +$("#kMinor").value || 0), editMajor: Math.max(0, +$("#kMajor").value || 0), by: S.email, at: Date.now() }, { merge: true }); $("#kSaveMsg").textContent = "Saved."; } catch (err) { $("#kSaveMsg").textContent = "Couldn't save. Only leads can change this."; }
 });
 $("#kReset").addEventListener("click", () => { S.kpiSettings = { ...KPI_DEFAULTS }; $("#kpiSettingsForm").dataset.filled = ""; fillKpiSettings(); $("#kSaveMsg").textContent = "Defaults loaded. Click Save to apply."; });
 let myKpiUnsubs = [];
@@ -891,10 +1036,10 @@ function renderSrcPanel(tabKey) {
   const tabs = S.allTabs || [];
   const bySheet = Object.keys(SHEET_LABEL).map(k => ({ k, tabs: tabs.filter(t => t.key === k) })).filter(g => g.tabs.length);
   const useful = t => tabKey === "links" ? t.kinds.includes("links") : tabKey === "projects" ? t.kinds.some(k => k === "tracker" || k === "reshoot") : tabKey === "deadlines" ? t.kinds.some(k => k === "timeline" || k === "calendar") : t.kinds.some(k => k !== "links");
-  let html = "<div class=\"src-box\"><div class=\"src-head\"><b>Sheet tabs shown in " + SRC_TABS[tabKey] + "</b><span class=\"meta\">Tick the tabs this page should use. Tabs the dashboard can't read for this page are faded.</span></div>" +
+  let html = "<div class=\"src-box\"><div class=\"src-head\"><b>Sheet tabs shown in " + SRC_TABS[tabKey] + "</b><span class=\"meta\">Tick the tabs this page should use. Faded tabs have nothing this page can use (for Links: no links in the tab), but you can still tick them.</span></div>" +
     (tabs.length ? bySheet.map(g => "<div class=\"src-sheet\"><div class=\"sub-h\">" + esc(SHEET_LABEL[g.k]) + "</div><div class=\"tab-picks\">" + g.tabs.map(t => {
-      const n = Object.keys(t.tab.links || {}).length;
-      const kinds = t.kinds.filter(k => tabKey === "links" ? k === "links" : k !== "links").map(k => KIND_LABEL[k] + (k === "links" ? " · " + n : "")).join(", ") || "Not readable here";
+      const n = tabLinkCount(t.tab);
+      const kinds = t.kinds.filter(k => tabKey === "links" ? k === "links" : k !== "links").map(k => KIND_LABEL[k] + (k === "links" ? " · " + n : "")).join(", ") || (tabKey === "links" ? "No links found" : "Nothing this page can use");
       return "<label class=\"tab-pick" + (useful(t) ? "" : " none") + "\"><input type=\"checkbox\" data-src-tab=\"" + esc(t.id) + "\"" + (chosen.has(t.id) ? " checked" : "") + "> <span><b>" + esc(t.tab.name.trim()) + "</b><span class=\"meta\"> · " + esc(kinds) + "</span></span></label>";
     }).join("") + "</div></div>").join("") : "<p class=\"empty\">Sheet tabs appear after the first sheet sync.</p>");
   if (tabKey === "projects" && (S.allProjects || []).length) {
@@ -1017,10 +1162,10 @@ onAuthStateChanged(auth, async user => {
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
   live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); });
   if (S.isLead) {
-    live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); });
+    live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
-    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); renderKpi(); });
-    live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); });
+    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); renderKpi(); renderEditReview(); });
+    live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
     live(query(collection(db, "plans"), where("editor", "==", S.myName)), s => { S.plans = s.docs.map(d => ({ id: d.id, ...d.data() })); renderPlans(); });

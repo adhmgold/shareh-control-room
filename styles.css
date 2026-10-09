@@ -244,3 +244,16 @@ button.btn.danger-solid{background:var(--bad-fill);color:#fff}
 .src-sheet{margin-top:6px}
 .reset-box{margin-bottom:14px}
 .rs-list{margin:6px 0 4px;padding-inline-start:20px;font-size:13px;display:flex;flex-direction:column;gap:3px}
+
+/* send back for edits */
+.modal{position:fixed;inset:0;z-index:50;background:rgba(20,32,46,.45);display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px;overflow:auto}
+.modal-box{background:var(--surface);border:2px solid var(--ink);border-radius:16px;box-shadow:0 3px 0 var(--line);padding:18px;width:100%;max-width:560px}
+.ed-form{display:flex;flex-direction:column;gap:12px}
+.ed-form fieldset{border:2px solid var(--line);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:6px;margin:0}
+.ed-form legend{font-weight:700;padding:0 4px}
+.ed-form fieldset label{display:flex;gap:8px;align-items:baseline;cursor:pointer}
+.ed-form input[type=radio]{width:auto}
+.ed-form .inline-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.ed-form .inline-row .f{flex:1 1 140px}
+.edit-line{margin-top:4px;font-size:12px}
+.ed-form > .f,.ed-form > fieldset,.ed-form > .inline-row{flex:none;margin:0}
