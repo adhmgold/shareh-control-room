@@ -261,3 +261,8 @@ button.btn.danger-solid{background:var(--bad-fill);color:#fff}
 .dl-move{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-inline-start:6px}
 .dl-move input{width:auto;padding:3px 6px}
 .lk-sheet span{display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-weight:500}
+
+.kp{display:flex;flex-direction:column;gap:4px;margin-top:8px;min-width:220px}
+.kp-row{display:grid;grid-template-columns:1fr auto;gap:0 10px;align-items:baseline;border-top:1px solid var(--line);padding-top:4px}
+.kp-row .meta{grid-column:1/-1;font-size:11px}
+.kp-row b.ok{color:var(--ok)} .kp-row b.acc{color:var(--accent)} .kp-row b.warn{color:var(--warn)} .kp-row b.bad{color:var(--bad)}

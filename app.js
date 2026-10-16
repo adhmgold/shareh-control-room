@@ -619,7 +619,8 @@ function episodeCard(e, logged) {
    Weights, target hours, working days and excused pause keywords are editable by leads (dash_settings/kpi). */
 const KPI_DEFAULTS = {
   weights: { deadlines: 30, output: 25, speed: 20, focus: 15, consistency: 10 },
-  targetHours: 6, penaltyPerDay: 5, editMinor: 10, editMajor: 25, workdays: [6, 0, 1, 2, 3, 4], minTakes: 3,
+  targetHours: 6, penaltyPerDay: 5, editMinor: 10, editMajor: 25,
+  dayHours: 7, wTasks: 50, wAttend: 20, wHours: 30, holidays: "", leave: "", workdays: [6, 0, 1, 2, 3, 4], minTakes: 3,
   excused: "render, rendering, export, exporting, upload, رندر, ريندر, تصدير, اكسبورت, review, feedback, waiting, wait, مراجعة, مراجعه, فيدباك, كومنت, استنى, انتظار, meeting, meet, call, ميتنج, اجتماع, pray, prayer, salah, صلاة, صلاه, الصلاة, الصلاه"
 };
 const PART_LABEL = { deadlines: "Deadlines", output: "Output", speed: "Speed", focus: "Focus", consistency: "Consistency" };
@@ -680,6 +681,47 @@ function fixOutcome(fix, todayK, nowHM, penPerDay) {
   const score = res === "pending" ? 100 : res === "ontime" ? 100 : taskScore(late, true);
   return { res, late, loss: 100 - score, penalty: res === "pending" ? 0 : latePenaltyDays(late) * penPerDay };
 }
+/* ---------- attendance and hours ----------
+   Workdays = every day of the period except Fridays, public holidays (KPI settings) and the editor's leave days.
+   In the current period only days up to yesterday count, plus today once he has logged work today.
+   A day worked = a workday with at least one take. Hours = take time from SS Tracker (already minus pauses; time on hold isn't logged).
+   Attendance = days worked ÷ workdays. Hours = all hours in the period (Fridays and overtime included) ÷ (days worked × 7), max 100%. */
+const isWeekend = k => parseYmd(k).getDay() === 5;   // Friday
+function dateList(text) { return String(text || "").split(/[\s,;]+/).map(x => x.trim()).filter(isYmd); }
+function leaveMap(text) {
+  const m = {}; String(text || "").split(/\n/).forEach(line => { const i = line.indexOf(":"); if (i < 1) return; const n = line.slice(0, i).trim().toLowerCase(); m[n] = (m[n] || []).concat(dateList(line.slice(i + 1))); });
+  return m;
+}
+function attendance(name, list, b, cfg) {
+  const todayK = today(), hol = new Set(dateList(cfg.holidays)), lv = new Set((leaveMap(cfg.leave)[String(name).toLowerCase()] || []));
+  const workedDays = new Set(list.filter(e => entryHours(e) > 0 || e.date).map(e => e.date));
+  const work = [], off = [];
+  for (let d = parseYmd(b.start); ymd(d) <= b.end; d.setDate(d.getDate() + 1)) {
+    const k = ymd(d);
+    if (k > todayK || (k === todayK && !workedDays.has(k))) break;
+    if (isWeekend(k)) continue;
+    if (hol.has(k) || lv.has(k)) { off.push(k); continue; }
+    work.push(k);
+  }
+  const perDay = {}; list.forEach(e => { perDay[e.date] = (perDay[e.date] || 0) + entryHours(e); });
+  const daysWorked = work.filter(k => perDay[k] > 0);
+  const missed = work.filter(k => !(perDay[k] > 0));
+  const total = list.reduce((a, e) => a + entryHours(e), 0);
+  const dayH = Math.max(1, +cfg.dayHours || 7);
+  const short = daysWorked.filter(k => perDay[k] < dayH).map(k => ({ day: k, h: perDay[k] }));
+  const extraDays = Object.keys(perDay).filter(k => perDay[k] > 0 && !work.includes(k));   // Fridays, holidays, leave
+  return {
+    workdays: work.length, daysWorked: daysWorked.length, missedDays: missed, offDays: off, shortDays: short, extraDays, totalHours: total, dayH,
+    avgPerDay: daysWorked.length ? total / daysWorked.length : 0,
+    attendPct: work.length ? 100 * daysWorked.length / work.length : null,
+    hoursPct: work.length ? (daysWorked.length ? Math.min(100, 100 * total / (daysWorked.length * dayH)) : 0) : null
+  };
+}
+function blendKpi(parts, cfg) {
+  const w = { tasks: +cfg.wTasks || 0, attend: +cfg.wAttend || 0, hours: +cfg.wHours || 0 };
+  let sum = 0, wt = 0; Object.keys(w).forEach(k => { if (parts[k] != null && w[k] > 0) { sum += parts[k] * w[k]; wt += w[k]; } });
+  return wt ? sum / wt : null;
+}
 function computeKpi(month, entries) {
   const words = excusedWords(), b = periodBounds(month), todayK = today(), now = new Date(), nowHM = pad(now.getHours()) + ":" + pad(now.getMinutes());
   const cfg = kpiCfg(), byId = {}; (S.plans || []).forEach(p => { byId[p.id] = p; });
@@ -687,7 +729,7 @@ function computeKpi(month, entries) {
   const tasks = (S.plans || []).filter(p => p.editor && p.deadline && p.deadline >= b.start && p.deadline <= b.end && p.status !== "dropped" && !(p.revisionOf && p.fault === "editor"));
   const penPerDay = Math.max(0, +cfg.penaltyPerDay || 0);
   const ents = entries.filter(e => e.editor && periodOf(e.date) === month);
-  const names = [...new Set([...tasks.map(p => p.editor), ...ents.map(e => e.editor)])];
+  const names = [...new Set([...tasks.map(p => p.editor), ...ents.map(e => e.editor), ...(month <= curMonth() ? (S.roster || []) : [])])];
   const rows = names.map(name => {
     const mine = tasks.filter(p => p.editor === name).map(p => {
       const res = taskResult(p, todayK, nowHM);
@@ -724,10 +766,14 @@ function computeKpi(month, entries) {
     }));
     list.filter(e => e.held).forEach(e => { const dec = S.pauseReviews[holdKey(e)], ex = dec ? dec.decision === "accept" : isExcused(e.holdReason, words); if (ex) hE++; else hC++; const label = "HOLD: " + (e.holdReason || "no reason given").trim().slice(0, 34) + (dec ? (dec.decision === "accept" ? " (accepted)" : " (rejected)") : ""); reasons[label] = reasons[label] || { n: 0, min: 0, ex }; reasons[label].n++; });
     const daily = {}; list.forEach(e => { const d = daily[e.date] = daily[e.date] || { takes: 0, hours: 0 }; d.takes++; d.hours += entryHours(e); });
+    const att = attendance(name, list, b, cfg);
+    const blended = blendKpi({ tasks: avg, attend: att.attendPct, hours: att.hoursPct }, cfg);
     return {
       name, tasks: mine, total: mine.length, counted: counted.length, onTime,
       late: counted.filter(t => t.res === "late").length, missed: counted.filter(t => t.res === "missed").length, pending: mine.filter(t => t.res === "pending").length,
-      avg, penalty, score: avg == null ? null : Math.max(0, avg - penalty), enough: counted.length > 0,
+      avg, penalty, score: blended == null ? null : Math.max(0, blended - penalty), enough: blended != null,
+      attendPct: att.attendPct, hoursPct: att.hoursPct, workdays: att.workdays, daysWorked: att.daysWorked, missedDays: att.missedDays, offDays: att.offDays, shortDays: att.shortDays, extraDays: att.extraDays, avgPerDay: att.avgPerDay, dayH: att.dayH,
+      weights: { tasks: +cfg.wTasks || 0, attend: +cfg.wAttend || 0, hours: +cfg.wHours || 0 },
       editsFault, editsOther, firstPassOk, firstPassOf: originals.length, firstPass: originals.length ? 100 * firstPassOk / originals.length : null,
       takes: list.length, hours: list.reduce((a, e) => a + entryHours(e), 0), videos: new Set(list.map(e => compact(e.video))).size,
       countedPauses: cP, excusedPauses: eP, countedMin: cMin, excusedMin: eMin, countedHolds: hC, excusedHolds: hE,
@@ -745,22 +791,36 @@ function sparkline(vals) {
   return "<svg class=\"spark\" viewBox=\"0 0 " + ((vals.length - 1) * 14 + 4) + " 32\" width=\"" + ((vals.length - 1) * 14 + 4) + "\" height=\"32\" aria-hidden=\"true\"><polyline points=\"" + pts.map(p => p.join(",")).join(" ") + "\" fill=\"none\" stroke=\"var(--accent)\" stroke-width=\"2\"/><circle cx=\"" + pts[pts.length - 1][0] + "\" cy=\"" + pts[pts.length - 1][1] + "\" r=\"3\" fill=\"var(--accent)\"/></svg>";
 }
 const pctTxt = v => v == null ? "—" : Math.round(v) + "%";
+function kpiParts(r) {
+  if (r.attendPct === undefined) return r.counted ? "<span class=\"meta\">" + r.onTime + " of " + r.counted + " tasks on time</span>" : "";
+  const w = r.weights || {}, row = (lab, v, wt, sub) => "<div class=\"kp-row\"><span>" + lab + " <span class=\"meta\">" + wt + "%</span></span><b class=\"" + scoreCls(v) + "\">" + pctTxt(v) + "</b><span class=\"meta\">" + sub + "</span></div>";
+  return "<div class=\"kp\">" +
+    row("Tasks on time", r.avg, w.tasks, r.counted ? r.onTime + " of " + r.counted + " on time" : "no tasks due yet: not counted") +
+    row("Attendance", r.attendPct, w.attend, r.workdays ? r.daysWorked + " of " + r.workdays + " workdays" : "no workdays yet") +
+    row("Hours", r.hoursPct, w.hours, r.daysWorked ? (Math.round(r.avgPerDay * 10) / 10) + " h per day worked (target " + r.dayH + ")" : "—") +
+    (r.penalty ? "<div class=\"kp-row\"><span>Late deductions</span><b class=\"bad\">−" + r.penalty + "</b><span class=\"meta\">tasks more than 3 days late</span></div>" : "") + "</div>";
+}
 function kpiCard(r, prev) {
   const d = prev && prev.score != null && r.score != null ? r.score - prev.score : null;
   return "<div class=\"kpi-card\"><div class=\"kpi-big\"><span class=\"lab\">KPI</span><span class=\"val " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span>" +
-    (r.counted ? "<span class=\"meta\">" + r.onTime + " of " + r.counted + " tasks on time</span><span class=\"meta\">Task average " + Math.round(r.avg) + "%" + (r.penalty ? " − " + r.penalty + " pts late deductions" : "") + "</span>" : "<span class=\"meta\">No tasks due yet this period</span>") +
+    kpiParts(r) +
     (d == null ? "" : "<span class=\"meta\">" + (d >= 0 ? "▲ " : "▼ ") + Math.abs(Math.round(d)) + " pts vs last period</span>") + "</div>" +
     "<div class=\"facts\">" + fact("On time", "<span class=\"pill ok\">" + r.onTime + "</span>") + fact("Late", "<span class=\"pill bad\">" + r.late + "</span>") + fact("Not done, past deadline", "<span class=\"pill bad\">" + r.missed + "</span>") + fact("Still upcoming", String(r.pending)) +
     fact("Edits, his fault", (r.editsFault ? "<span class=\"pill bad\">" + r.editsFault + "</span>" : "0") + (r.editsOther ? " · " + r.editsOther + " not his fault" : "")) +
     fact("First-time approval", r.firstPassOf ? Math.round(r.firstPass) + "% <span class=\"meta\">(" + r.firstPassOk + " of " + r.firstPassOf + " finished videos with no edits from his mistakes)</span>" : "—") +
-    fact("Hours logged", fmtH(r.hours)) + fact("Active days", String(r.activeDays)) +
+    fact("Hours logged", fmtH(r.hours) + (r.extraDays && r.extraDays.length ? " <span class=\"meta\">(incl. " + r.extraDays.length + " Friday/holiday day" + (r.extraDays.length > 1 ? "s" : "") + ")</span>" : "")) +
+    fact("Days missed", r.missedDays ? (r.missedDays.length ? "<span class=\"pill bad\">" + r.missedDays.length + "</span> " + r.missedDays.map(fmtDay).join(", ") : "0") : "—") +
+    fact("Days under " + (r.dayH || 7) + " h", r.shortDays ? (r.shortDays.length ? r.shortDays.length + " <span class=\"meta\">" + r.shortDays.slice(0, 10).map(x => fmtDay(x.day) + " " + fmtH(x.h)).join(" · ") + (r.shortDays.length > 10 ? " …" : "") + "</span>" : "0") : "—") +
+    (r.offDays && r.offDays.length ? fact("Holidays / leave", r.offDays.map(fmtDay).join(", ")) : "") +
     fact("Pauses", r.countedPauses + " not excused (" + Math.round(r.countedMin) + " min) · " + r.excusedPauses + " excused") + fact("Holds", r.countedHolds + " not excused · " + r.excusedHolds + " excused") + "</div></div>";
 }
 function kpiDetail(r) {
   const b = periodBounds(S.kpiMonth), all = []; for (let d = parseYmd(b.start); ymd(d) <= b.end; d.setDate(d.getDate() + 1)) all.push(ymd(d));
   const days = Object.keys(r.daily || {}); const mx = Math.max(1, ...days.map(k => r.daily[k].hours));
-  const bw = 16, H = 90;
-  const bars = all.map((k, i) => { const v = (r.daily || {})[k]; const h = v ? Math.max(2, (v.hours / mx) * (H - 20)) : 0; return (v ? "<rect x=\"" + (i * bw + 2) + "\" y=\"" + (H - 14 - h) + "\" width=\"" + (bw - 4) + "\" height=\"" + h + "\" rx=\"2\" fill=\"var(--accent)\"><title>" + fmtDay(k) + ": " + v.takes + " takes · " + fmtH(v.hours) + "</title></rect><text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 16 - h) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + v.takes + "</text>" : "") + (i % 5 === 0 ? "<text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 2) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + fmtDay(k) + "</text>" : ""); }).join("");
+  const bw = 16, H = 90, dayH = r.dayH || 7, mxH = Math.max(mx, dayH), missed = new Set(r.missedDays || []);
+  const shade = all.map((k, i) => isWeekend(k) ? "<rect x=\"" + (i * bw) + "\" y=\"0\" width=\"" + bw + "\" height=\"" + (H - 14) + "\" fill=\"var(--sunk)\"><title>Friday</title></rect>" : "").join("");
+  const bars = shade + all.map((k, i) => { const v = (r.daily || {})[k]; const h = v ? Math.max(2, (v.hours / mxH) * (H - 20)) : 0; return (v ? "<rect x=\"" + (i * bw + 2) + "\" y=\"" + (H - 14 - h) + "\" width=\"" + (bw - 4) + "\" height=\"" + h + "\" rx=\"2\" fill=\"var(--accent)\"><title>" + fmtDay(k) + ": " + v.takes + " takes · " + fmtH(v.hours) + "</title></rect><text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 16 - h) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + v.takes + "</text>" : "") + (i % 5 === 0 ? "<text x=\"" + (i * bw + bw / 2) + "\" y=\"" + (H - 2) + "\" text-anchor=\"middle\" font-size=\"9\" fill=\"var(--muted)\">" + fmtDay(k) + "</text>" : "") + (missed.has(k) ? "<rect x=\"" + (i * bw + 4) + "\" y=\"" + (H - 18) + "\" width=\"" + (bw - 8) + "\" height=\"4\" rx=\"2\" fill=\"var(--bad)\"><title>" + fmtDay(k) + ": no work logged</title></rect>" : ""); }).join("") +
+    "<line x1=\"0\" x2=\"" + (all.length * bw + 4) + "\" y1=\"" + (H - 14 - (dayH / mxH) * (H - 20)) + "\" y2=\"" + (H - 14 - (dayH / mxH) * (H - 20)) + "\" stroke=\"var(--warn)\" stroke-dasharray=\"4 3\"><title>" + dayH + " h target</title></line>";
   const pc = v => v >= 85 ? "ok" : v >= 45 ? "warn" : "bad";
   const pen = x => x.penalty ? " <span class=\"pill bad\">−" + x.penalty + " pts from KPI</span>" : "";
   const RES = { ontime: "<span class=\"pill ok\">On time · 100%</span>", late: x => "<span class=\"pill " + pc(x.timing) + "\">" + (x.late ? x.late + "d late" : "After " + esc(x.deadlineTime)) + " · " + x.timing + "%</span>" + pen(x), missed: x => "<span class=\"pill " + pc(x.kpi) + "\">Not done · " + (x.late ? x.late + "d past" : "past " + esc(x.deadlineTime)) + " · " + x.timing + "%</span>" + pen(x), pending: "<span class=\"pill\">Upcoming · not counted yet</span>" };
@@ -776,7 +836,7 @@ function kpiDetail(r) {
     "<h3 class=\"sub-h\">Tasks in this period <span class=\"meta\">(each task's own KPI)</span></h3>" + ((r.tasks || []).length ? "<div class=\"tscroll\"><table><thead><tr><th>Episode</th><th>Project · stage</th><th>Priority</th><th>Deadline</th><th>Finished</th><th>Task KPI</th></tr></thead><tbody>" +
       r.tasks.slice().sort((a, b2) => a.deadline.localeCompare(b2.deadline)).map(x => "<tr><td class=\"code\">" + esc(x.video) + (x.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + fixTag(x) + "</td><td>" + esc(x.project) + " · " + esc(x.stage) + "</td><td>" + esc(x.priority) + "</td><td class=\"code\">" + fmtDay(x.deadline) + (x.deadlineTime ? " " + esc(x.deadlineTime) : "") + (x.moved && x.moved !== x.deadline ? "<div class=\"meta\">moved from " + fmtDay(x.moved) + "</div>" : "") + "</td><td class=\"code\">" + (x.done ? fmtDay(x.done) : "—") + "</td><td>" + kpiCell(x) + reviewBtn(x) + sendBtn(x) + editLines(x) + "</td></tr>").join("") + "</tbody></table></div>"
       : "<p class=\"empty\">No tasks with a deadline in this period. Editors add tasks in SS Tracker under “Today's plan”.</p>") +
-    "<h3 class=\"sub-h\">Hours and takes per day <span class=\"meta\">(number above each bar = takes)</span></h3><div class=\"tscroll\"><svg viewBox=\"0 0 " + (all.length * bw + 4) + " " + H + "\" width=\"" + (all.length * bw + 4) + "\" height=\"" + H + "\" role=\"img\" aria-label=\"Hours per day\">" + bars + "</svg></div>" +
+    "<h3 class=\"sub-h\">Hours and takes per day <span class=\"meta\">(number above each bar = takes · dashed line = " + dayH + " h target · red mark = workday with no work · shaded = Friday)</span></h3><div class=\"tscroll\"><svg viewBox=\"0 0 " + (all.length * bw + 4) + " " + H + "\" width=\"" + (all.length * bw + 4) + "\" height=\"" + H + "\" role=\"img\" aria-label=\"Hours per day\">" + bars + "</svg></div>" +
     "<h3 class=\"sub-h\">Pause and hold reasons</h3>" + (reasons.length ? "<ul class=\"list\">" + reasons.map(([k, v]) => "<li><span class=\"grow\" dir=\"auto\">" + esc(k) + " " + (v.ex ? "<span class=\"pill ok\">excused</span>" : "") + "</span><span class=\"meta\">" + v.n + "×" + (v.min ? " · " + Math.round(v.min) + " min" : "") + "</span></li>").join("") + "</ul>" : "<p class=\"empty\">No pauses or holds this period.</p>");
 }
 function kpiMonths() { const out = []; let m = curMonth(); for (let i = 0; i < 12; i++) { out.push(m); m = prevMonth(m); } return out; }
@@ -790,10 +850,13 @@ function renderKpi() {
     fact("Edits, his fault", "Mistakes, sync, wrong asset, not following the brief. The original task loses " + kpiCfg().editMinor + " points for a minor round and " + kpiCfg().editMajor + " for a major one. The fix doesn't add a task; if the fix is late, what it loses on the scale above also comes off the original task.") +
     fact("Edits, not his fault", "Script or content changes, client requests, late assets. The original keeps its score, and the fix is a new task scored like any other.") +
     fact("Reviewed by a lead", "A lead can set any task's KPI by hand (Review button). That number replaces the automatic one for that task, with no late-day deductions. Moving a task's deadline rescores it against the new date.") +
-    fact("The period's KPI", "Average of all task scores in the period (after edit deductions), minus late-day deductions (never below 0%).") +
+    fact("The period's KPI", "Tasks on time " + kpiCfg().wTasks + "% + Attendance " + kpiCfg().wAttend + "% + Hours " + kpiCfg().wHours + "%, minus late-day deductions (never below 0%). With no tasks due yet, it comes from Attendance and Hours only.") +
+    fact("Tasks on time", "Average of all task scores in the period, after edit deductions and lead reviews.") +
+    fact("Attendance", "Days worked ÷ workdays. Workdays are every day except Friday, public holidays and the editor's leave days (KPI settings). In the current period, days up to today count.") +
+    fact("Hours", "All hours logged in SS Tracker (take time minus pauses; time on hold isn't counted) ÷ (days worked × " + kpiCfg().dayHours + " h). Overtime and Friday work count and can make up for short days, up to 100%.") +
     fact("Period", "From the 25th of one month to the 24th of the next. Tasks belong to the period their deadline falls in.") +
     fact("Upcoming tasks", "Tasks whose deadline hasn't arrived and aren't done yet don't count until they're finished or overdue.") +
-    "</div><p class=\"meta\">The current period updates live. Pauses, holds and hours are shown for context; they don't change the KPI.</p>";
+    "</div><p class=\"meta\">The current period updates live.</p>";
   $("#kpiSettingsPanel").hidden = !S.isLead;
   if (S.isLead) {
     const fromSnap = m => { const live = computeKpi(m, S.entries), snap = (S.kpiSnap || {})[m]; if (m !== curMonth() && snap && snap.length && !live.rows.some(r => r.total)) { return { month: m, bounds: periodBounds(m), rows: snap.slice().sort((a, b2) => (b2.enough - a.enough) || ((b2.score ?? -1) - (a.score ?? -1))), saved: true }; } return live; };
@@ -802,9 +865,9 @@ function renderKpi() {
     const trend = {}; trendMonths.forEach(m => fromSnap(m).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.score; }));
     const teamOn = res.rows.reduce((a, r) => a + r.onTime, 0), teamCounted = res.rows.reduce((a, r) => a + r.counted, 0);
     $("#kpiAsOf").textContent = res.rows.length + " editors · team " + (teamCounted ? Math.round(100 * teamOn / teamCounted) + "% on time (" + teamOn + "/" + teamCounted + ")" : "no tasks due yet");
-    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">KPI</th><th style=\"text-align:end\">Tasks due</th><th style=\"text-align:end\">On time</th><th style=\"text-align:end\">Late</th><th style=\"text-align:end\">Not done</th><th style=\"text-align:end\">Upcoming</th><th style=\"text-align:end\">Deducted</th><th style=\"text-align:end\">Edits</th><th style=\"text-align:end\">1st-time OK</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Holds</th><th>6 periods</th></tr></thead><tbody>" +
+    $("#kpiBody").innerHTML = res.rows.length ? "<div class=\"tscroll\"><table class=\"kpi-table\"><thead><tr><th>#</th><th>Editor</th><th style=\"text-align:end\">KPI</th><th style=\"text-align:end\">Tasks</th><th style=\"text-align:end\">Attendance</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Tasks due</th><th style=\"text-align:end\">On time</th><th style=\"text-align:end\">Late</th><th style=\"text-align:end\">Not done</th><th style=\"text-align:end\">Upcoming</th><th style=\"text-align:end\">Deducted</th><th style=\"text-align:end\">Edits</th><th style=\"text-align:end\">1st-time OK</th><th style=\"text-align:end\">vs last</th><th style=\"text-align:end\">Hours</th><th style=\"text-align:end\">Pauses</th><th style=\"text-align:end\">Holds</th><th>6 periods</th></tr></thead><tbody>" +
       res.rows.map((r, i) => { const p = prev.rows.find(x => x.name === r.name); const d = p && p.score != null && r.score != null ? Math.round(r.score - p.score) : null;
-        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b></td><td class=\"n\">" + (r.score == null ? "<span class=\"meta\">no tasks yet</span>" : "<span class=\"score " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span>") + "</td><td class=\"n\">" + r.counted + "</td><td class=\"n\"><span class=\"up\">" + r.onTime + "</span></td><td class=\"n\">" + (r.late ? "<span class=\"down\">" + r.late + "</span>" : "·") + "</td><td class=\"n\">" + (r.missed ? "<span class=\"down\">" + r.missed + "</span>" : "·") + "</td><td class=\"n\">" + (r.pending || "·") + "</td><td class=\"n\">" + (r.penalty ? "<span class=\"down\">−" + r.penalty + "</span>" : "·") + "</td><td class=\"n\">" + (r.editsFault ? "<span class=\"down\">" + r.editsFault + "</span>" : "·") + (r.editsOther ? "<span class=\"meta\"> +" + r.editsOther + "</span>" : "") + "</td><td class=\"n\">" + (r.firstPass == null ? "·" : Math.round(r.firstPass) + "%") + "</td><td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.countedHolds + "<span class=\"meta\"> +" + r.excusedHolds + "</span></td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
+        return "<tr class=\"clickable" + (S.kpiOpen === r.name ? " on" : "") + "\" data-kpi=\"" + esc(r.name) + "\"><td class=\"n meta\">" + (r.enough ? i + 1 : "") + "</td><td><b>" + esc(r.name) + "</b></td><td class=\"n\">" + (r.score == null ? "<span class=\"meta\">no tasks yet</span>" : "<span class=\"score " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span>") + "</td><td class=\"n\">" + pctTxt(r.avg) + "</td><td class=\"n\">" + pctTxt(r.attendPct) + (r.workdays ? "<div class=\"meta\">" + r.daysWorked + "/" + r.workdays + " days</div>" : "") + "</td><td class=\"n\">" + pctTxt(r.hoursPct) + (r.daysWorked ? "<div class=\"meta\">" + (Math.round(r.avgPerDay * 10) / 10) + " h/day</div>" : "") + "</td><td class=\"n\">" + r.counted + "</td><td class=\"n\"><span class=\"up\">" + r.onTime + "</span></td><td class=\"n\">" + (r.late ? "<span class=\"down\">" + r.late + "</span>" : "·") + "</td><td class=\"n\">" + (r.missed ? "<span class=\"down\">" + r.missed + "</span>" : "·") + "</td><td class=\"n\">" + (r.pending || "·") + "</td><td class=\"n\">" + (r.penalty ? "<span class=\"down\">−" + r.penalty + "</span>" : "·") + "</td><td class=\"n\">" + (r.editsFault ? "<span class=\"down\">" + r.editsFault + "</span>" : "·") + (r.editsOther ? "<span class=\"meta\"> +" + r.editsOther + "</span>" : "") + "</td><td class=\"n\">" + (r.firstPass == null ? "·" : Math.round(r.firstPass) + "%") + "</td><td class=\"n\">" + (d == null ? "·" : "<span class=\"" + (d >= 0 ? "up" : "down") + "\">" + (d >= 0 ? "▲" : "▼") + Math.abs(d) + "</span>") + "</td><td class=\"n\">" + fmtH(r.hours) + "</td><td class=\"n\">" + r.countedPauses + "<span class=\"meta\"> +" + r.excusedPauses + "</span></td><td class=\"n\">" + r.countedHolds + "<span class=\"meta\"> +" + r.excusedHolds + "</span></td><td>" + sparkline(trendMonths.map(m => (trend[r.name] || {})[m] ?? null)) + "</td></tr>"; }).join("") +
       "</tbody></table></div><p class=\"meta\">Click an editor to see every task and its KPI. Pauses and holds: not excused <span class=\"meta\">+ excused</span>. Edits: his fault <span class=\"meta\">+ not his fault</span>.</p>" : "<p class=\"empty\">No tasks or takes in " + esc(monthLabel(S.kpiMonth)) + ".</p>";
     const open = res.rows.find(r => r.name === S.kpiOpen);
     $("#kpiDetail").hidden = !open; $("#kpiDetail").innerHTML = open ? kpiCard(open, prev.rows.find(x => x.name === open.name)) + kpiDetail(open) : "";
@@ -821,6 +884,7 @@ function renderKpi() {
 function fillKpiSettings() {
   const f = $("#kpiSettingsForm"); if (f.dataset.filled === JSON.stringify(S.kpiSettings || {})) return;
   $("#kExcused").value = kpiCfg().excused; $("#kPenalty").value = kpiCfg().penaltyPerDay; $("#kMinor").value = kpiCfg().editMinor; $("#kMajor").value = kpiCfg().editMajor;
+  $("#kDayH").value = kpiCfg().dayHours; $("#kWT").value = kpiCfg().wTasks; $("#kWA").value = kpiCfg().wAttend; $("#kWH").value = kpiCfg().wHours; $("#kHol").value = kpiCfg().holidays; $("#kLeave").value = kpiCfg().leave;
   f.dataset.filled = JSON.stringify(S.kpiSettings || {});
 }
 
@@ -1092,7 +1156,7 @@ $("#prBulk").addEventListener("click", async e => {
 });
 $("#kpiSettingsForm").addEventListener("submit", async e => {
   e.preventDefault();
-  try { await setDoc(doc(db, "dash_settings", "kpi"), { excused: $("#kExcused").value, penaltyPerDay: Math.max(0, +$("#kPenalty").value || 0), editMinor: Math.max(0, +$("#kMinor").value || 0), editMajor: Math.max(0, +$("#kMajor").value || 0), by: S.email, at: Date.now() }, { merge: true }); $("#kSaveMsg").textContent = "Saved."; } catch (err) { $("#kSaveMsg").textContent = "Couldn't save. Only leads can change this."; }
+  try { await setDoc(doc(db, "dash_settings", "kpi"), { excused: $("#kExcused").value, penaltyPerDay: Math.max(0, +$("#kPenalty").value || 0), editMinor: Math.max(0, +$("#kMinor").value || 0), editMajor: Math.max(0, +$("#kMajor").value || 0), dayHours: Math.max(1, +$("#kDayH").value || 7), wTasks: Math.max(0, +$("#kWT").value || 0), wAttend: Math.max(0, +$("#kWA").value || 0), wHours: Math.max(0, +$("#kWH").value || 0), holidays: $("#kHol").value.trim(), leave: $("#kLeave").value.trim(), by: S.email, at: Date.now() }, { merge: true }); $("#kSaveMsg").textContent = "Saved."; } catch (err) { $("#kSaveMsg").textContent = "Couldn't save. Only leads can change this."; }
 });
 $("#kReset").addEventListener("click", () => { S.kpiSettings = { ...KPI_DEFAULTS }; $("#kpiSettingsForm").dataset.filled = ""; fillKpiSettings(); $("#kSaveMsg").textContent = "Defaults loaded. Click Save to apply."; });
 let myKpiUnsubs = [];
@@ -1313,6 +1377,7 @@ onAuthStateChanged(auth, async user => {
   live(doc(db, "dash_settings", "deadlines"), snap => { S.dlMoves = snap.exists() ? (snap.data().moved || {}) : {}; applySheets(); });
   live(doc(db, "dash_settings", "extraSheets"), snap => { S.extraSheets = snap.exists() ? (snap.data().list || []) : []; watchExtraSheets(); applySheets(); });
   live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
+  if (S.isLead) live(doc(db, "config", "credentials"), snap => { S.roster = snap.exists() ? Object.keys(snap.data().editors || {}).sort() : []; renderKpi(); });
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
