@@ -1433,7 +1433,12 @@ onAuthStateChanged(auth, async user => {
   live(doc(db, "dash_settings", "deadlines"), snap => { S.dlMoves = snap.exists() ? (snap.data().moved || {}) : {}; applySheets(); });
   live(doc(db, "dash_settings", "extraSheets"), snap => { S.extraSheets = snap.exists() ? (snap.data().list || []) : []; watchExtraSheets(); applySheets(); });
   live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
-  if (S.isLead) live(doc(db, "config", "credentials"), snap => { S.roster = snap.exists() ? Object.keys(snap.data().editors || {}).sort() : []; S.renamed = snap.exists() ? (snap.data().renamed || {}) : {}; fixRenamedRoles(); renderKpi(); renderAvailability(); });
+  // SS Tracker's editor list: config/roster (names only). Before SS Tracker's sign-in upgrade it was config/credentials.
+  if (S.isLead) {
+    const applyRoster = () => { const r = S.rosterDoc || S.legacyCreds || {}; S.roster = (Array.isArray(r.editors) ? r.editors : Object.keys(r.editors || {})).slice().sort(); S.renamed = r.renamed || {}; fixRenamedRoles(); renderKpi(); renderAvailability(); };
+    live(doc(db, "config", "roster"), snap => { S.rosterDoc = snap.exists() ? snap.data() : null; applyRoster(); });
+    live(doc(db, "config", "credentials"), snap => { const d = snap.exists() ? snap.data() : null; S.legacyCreds = d && d.editors ? { editors: Object.keys(d.editors), renamed: d.renamed || {} } : null; applyRoster(); });
+  }
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
