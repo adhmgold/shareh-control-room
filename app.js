@@ -144,9 +144,43 @@ function parseCalendar(tabs) {
 const SHEET_LABEL = { master: "Master tracker", timeline: "Timeline", calendar: "Publishing calendar" };
 /* Which sheet tabs feed each dashboard tab. Saved in dash_settings/sources as arrays of "sheetKey|Tab name".
    A tab reset saves an empty array, so that dashboard tab shows nothing until tabs are chosen again. */
+/* Extra Google Sheets added from the dashboard (dash_settings/extraSheets.list = [{ key, id, title }]).
+   The Apps Script sync reads that list every minute and pushes each one to dash_sheets/{key}. */
+const sheetKeys = () => [...Object.keys(SHEET_LABEL), ...(S.extraSheets || []).map(x => x.key)];
+const sheetLabel = k => SHEET_LABEL[k] || ((S.extraSheets || []).find(x => x.key === k) || {}).title || ((S.raw[k] || {}).title) || k;
+const sheetIdFromUrl = u => { const m = /docs\.google\.com\/spreadsheets\/d\/([a-zA-Z0-9_-]{20,})/.exec(String(u || "")); return m ? m[1] : null; };
+const isKnownSheet = id => Object.values(SHEETS).some(s => s.id === id) || (S.extraSheets || []).some(x => x.id === id);
+async function addExtraSheet(url, title) {
+  const id = sheetIdFromUrl(url); if (!id) throw new Error("not a sheet");
+  if (isKnownSheet(id)) return "already";
+  const list = (S.extraSheets || []).slice();
+  let key = "x_" + id.slice(0, 12).replace(/[^A-Za-z0-9]/g, ""); while (list.some(x => x.key === key)) key += "_";
+  list.push({ key, id, title: (title || "").trim() || "Sheet " + (list.length + 1), by: S.email, at: Date.now() });
+  await setDoc(doc(db, "dash_settings", "extraSheets"), { list });
+  return "added";
+}
+async function removeExtraSheet(key) {
+  await setDoc(doc(db, "dash_settings", "extraSheets"), { list: (S.extraSheets || []).filter(x => x.key !== key) });
+}
+const extraUnsubs = {};
+S.rawErr = {};
+function watchExtraSheets() {
+  const want = new Set((S.extraSheets || []).map(x => x.key));
+  Object.keys(extraUnsubs).forEach(k => { if (!want.has(k)) { try { extraUnsubs[k](); } catch (e) { } delete extraUnsubs[k]; delete S.raw[k]; delete S.rawErr[k]; } });
+  want.forEach(k => {
+    if (extraUnsubs[k]) return;
+    extraUnsubs[k] = onSnapshot(doc(db, "dash_sheets", k), snap => {
+      if (!snap.exists()) return;
+      const d = snap.data();
+      S.rawErr[k] = d.error || "";
+      if (d.payload) { try { S.raw[k] = JSON.parse(d.payload); S.rawAt[k] = d.updatedAt && d.updatedAt.toMillis ? d.updatedAt.toMillis() : Date.now(); } catch (e) { console.warn("sheet parse", k, e); } }
+      applySheets(); document.querySelectorAll(".src-box").forEach(b => { const k2 = b.closest("[id^=src-]"); if (k2 && !k2.hidden) renderSrcPanel(k2.id.slice(4)); });
+    }, () => { });
+  });
+}
 function allSheetTabs() {
   const out = [];
-  Object.keys(SHEET_LABEL).forEach(key => ((S.raw[key] || {}).tabs || []).forEach(tab => out.push({ id: key + "|" + tab.name.trim(), key, tab, kinds: tabKinds(tab) })));
+  sheetKeys().forEach(key => ((S.raw[key] || {}).tabs || []).forEach(tab => out.push({ id: key + "|" + tab.name.trim(), key, tab, kinds: tabKinds(tab) })));
   return out;
 }
 function tabKinds(tab) {
@@ -174,7 +208,9 @@ function srcDefaults(tabs) {
 }
 function srcCfg() {
   const c = S.srcSettings || {}, d = srcDefaults(S.allTabs || []);
-  const pick = k => Array.isArray(c[k]) ? c[k] : (k === "links" && Array.isArray(c.linkTabs) ? c.linkTabs : d[k]);
+  const known = new Set(Array.isArray(c.knownKeys) ? c.knownKeys : Object.keys(SHEET_LABEL));
+  const fresh = id => !known.has(id.split("|")[0]);
+  const pick = k => { const saved = Array.isArray(c[k]) ? c[k] : (k === "links" && Array.isArray(c.linkTabs) ? c.linkTabs : null); if (!saved) return d[k]; return [...saved, ...d[k].filter(id => fresh(id) && !saved.includes(id))]; };
   return { overview: pick("overview"), projects: pick("projects"), deadlines: pick("deadlines"), links: pick("links"), projectCfg: c.projectCfg || c.projects && !Array.isArray(c.projects) && c.projects || {} };
 }
 function tabLinks(key, tab) {
@@ -184,7 +220,7 @@ function tabLinks(key, tab) {
   Object.entries(all).forEach(([rc, url]) => {
     const [r, c] = rc.split(",").map(Number); let title = cellStr((rows[r] || [])[c]);
     if (!title || /https?:/i.test(title) || /^link$|^اللينك$/i.test(title)) { const rowText = (rows[r] || []).map(cellStr).filter(v => v && !/^https?:/i.test(v) && v.length < 80); title = rowText.slice(0, 2).join(" · ") || url; }
-    out.push({ title: title.split("\n")[0].slice(0, 90), url, group: tab.name.trim(), src: SHEET_LABEL[key] || key });
+    out.push({ title: title.split("\n")[0].slice(0, 90), url, group: tab.name.trim(), src: sheetLabel(key) });
   });
   return out;
 }
@@ -206,7 +242,7 @@ function buildData(ids, cfg) {
 function applySheets() {
   S.allTabs = allSheetTabs();
   const cfg = srcCfg();
-  const P = buildData(cfg.projects, cfg), D = buildData(cfg.deadlines, cfg), O = buildData(cfg.overview, cfg);
+  const P = applyMoves(buildData(cfg.projects, cfg)), D = applyMoves(buildData(cfg.deadlines, cfg)), O = applyMoves(buildData(cfg.overview, cfg));
   S.projects = P.projects; S.episodes = P.episodes; S.reshoots = P.reshoots;
   S.timeline = D.timeline; S.publish = D.publish;
   S.ov = O;
@@ -303,13 +339,27 @@ function renderPrioBar() {
 }
 
 /* ---------- deadlines ---------- */
+/* Deadlines that come from the sheets can be moved from the dashboard (leads). Saved in dash_settings/deadlines
+   as moved[key] = { date, from }. The sheet itself isn't changed; the dashboard uses the new date everywhere
+   (calendar, lists, episode due dates, priority filters). */
+const mvKey = (kind, a, b) => (kind + "|" + a + "|" + b).replace(/[.\/#$\[\]]/g, "_").slice(0, 300);
+function applyMoves(data) {
+  const mv = S.dlMoves || {};
+  (data.timeline || []).forEach(t => {
+    const a = mv[mvKey("delivery", t.grade, t.unit)], f = mv[mvKey("flag", t.grade, t.unit)];
+    if (a && a.date) { t.deliveryFrom = t.delivery; t.delivery = a.date; }
+    if (f && f.date) { t.flagFrom = t.flagDate; t.flagDate = f.date; }
+  });
+  ((data.publish || {}).items || []).forEach(p => { const m = mv[mvKey("publish", p.tab, p.title)]; if (m && m.date) { p.dateFrom = p.date; p.date = m.date; } });
+  return data;
+}
 function allDeadlines() {
   const out = [];
   S.timeline.forEach(t => {
-    if (t.delivery) out.push({ date: t.delivery, title: t.grade + " · Unit " + t.unit + " delivery", meta: t.shoot ? "Shoot: " + t.shoot : "School: " + t.school, kind: "delivery", done: t.done, src: "Timeline" });
-    if (t.flag && t.flagDate) out.push({ date: t.flagDate, title: t.grade + " · " + t.flag, meta: "Red flag", kind: "flag", done: false, src: "Timeline" });
+    if (t.delivery) out.push({ date: t.delivery, title: t.grade + " · Unit " + t.unit + " delivery", meta: t.shoot ? "Shoot: " + t.shoot : "School: " + t.school, kind: "delivery", done: t.done, src: "Timeline", mkey: mvKey("delivery", t.grade, t.unit), from: t.deliveryFrom });
+    if (t.flag && t.flagDate) out.push({ date: t.flagDate, title: t.grade + " · " + t.flag, meta: "Red flag", kind: "flag", done: false, src: "Timeline", mkey: mvKey("flag", t.grade, t.unit), from: t.flagFrom });
   });
-  S.publish.items.forEach(p => { if (p.date && p.state !== "published") out.push({ date: p.date, title: p.title || p.tab, meta: p.tab + (p.time ? " · " + p.time : "") + " · " + p.state, kind: "publish", done: false, src: "Calendar", url: p.url }); });
+  S.publish.items.forEach(p => { if (p.date && p.state !== "published") out.push({ date: p.date, title: p.title || p.tab, meta: p.tab + (p.time ? " · " + p.time : "") + " · " + p.state, kind: "publish", done: false, src: "Calendar", url: p.url, mkey: mvKey("publish", p.tab, p.title), from: p.dateFrom }); });
   S.deadlines.forEach(d => out.push({ date: d.date, title: d.title, meta: d.project || "Team deadline", kind: "custom", done: !!d.done, id: d.id, src: "Team", priority: d.priority || "normal" }));
   return out.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 }
@@ -320,7 +370,9 @@ function dlItem(d) {
   const rel = d.done ? "done" : n === 0 ? "today" : n < 0 ? (-n) + "d ago" : "in " + n + "d";
   const title = d.url ? "<a href=\"" + esc(d.url) + "\" target=\"_blank\" rel=\"noopener\">" + esc(d.title) + "</a>" : esc(d.title);
   const ctl = d.kind === "custom" ? " <button class=\"link\" data-dl-toggle=\"" + esc(d.id) + "\">" + (d.done ? "Reopen" : "Mark done") + "</button><button class=\"link\" data-dl-prio=\"" + esc(d.id) + "\">" + (d.priority === "high" ? "Unmark high" : "Mark high") + "</button><span><button class=\"link\" data-dl-del=\"" + esc(d.id) + "\">Delete</button></span>" : "";
-  return "<li><span class=\"when " + cls + "\">" + fmtDay(d.date) + "</span><span class=\"grow\" dir=\"auto\"><span style=\"" + (d.done ? "text-decoration:line-through;color:var(--muted)" : "") + "\">" + title + "</span> " + prioPill(p.level) + "<div class=\"meta\"><span class=\"pill " + pill + "\">" + esc(d.src) + "</span> " + esc(d.meta) + " · " + rel + ctl + "</div></span></li>";
+  const move = S.isLead ? " <button class=\"link\" type=\"button\" data-dl-move=\"" + esc(d.kind === "custom" ? "custom:" + d.id : d.mkey) + "\" data-dl-date=\"" + esc(d.date) + "\" data-dl-was=\"" + esc(d.from || "") + "\">Change date</button>" : "";
+  const movedTxt = d.from && d.from !== d.date ? " · <span class=\"pill acc\">moved from " + fmtDay(d.from) + "</span>" : "";
+  return "<li><span class=\"when " + cls + "\">" + fmtDay(d.date) + "</span><span class=\"grow\" dir=\"auto\"><span style=\"" + (d.done ? "text-decoration:line-through;color:var(--muted)" : "") + "\">" + title + "</span> " + prioPill(p.level) + "<div class=\"meta\"><span class=\"pill " + pill + "\">" + esc(d.src) + "</span> " + esc(d.meta) + " · " + rel + movedTxt + ctl + move + "<span class=\"dl-move-box\"></span></div></span></li>";
 }
 
 /* ---------- render ---------- */
@@ -412,6 +464,7 @@ function renderDeadlines() {
 function renderLinks() {
   const builtIn = [
     ...Object.values(SHEETS).map(s => ({ title: s.title, url: "https://docs.google.com/spreadsheets/d/" + s.id + "/edit", group: "Sheets", src: "Built in" })),
+    ...(S.extraSheets || []).map(x => ({ title: x.title, url: "https://docs.google.com/spreadsheets/d/" + x.id + "/edit", group: "Sheets", src: "Connected sheet" })),
     { title: "SS Tracker", url: SS_TRACKER_URL, group: "Tools", src: "Built in" }
   ];
   const hidden = new Set(S.hiddenLinks || []);
@@ -426,7 +479,7 @@ function renderLinks() {
   const show = all.filter(l => (S.lkFilter === "All" || (l.group || "Other") === S.lkFilter) && (!q || (l.title + " " + l.url + " " + (l.group || "")).toLowerCase().includes(q)));
   $("#links").innerHTML = show.map(l => {
     let host = ""; try { host = new URL(l.url).hostname.replace(/^www\./, ""); } catch (e) { }
-    return "<div class=\"lk\"><a href=\"" + esc(l.url) + "\" target=\"_blank\" rel=\"noopener\" dir=\"auto\">" + esc(l.title) + "</a><div class=\"meta\"><span>" + esc(host) + " · " + esc(l.group || "Other") + "</span>" + (S.showHiddenLinks ? "<span><button class=\"link\" data-lk-restore=\"" + esc(l.url) + "\">Restore</button></span>" : l.id ? "<span><button class=\"link\" data-lk-del=\"" + esc(l.id) + "\">Remove</button></span>" : S.isLead ? "<span><button class=\"link\" data-lk-hide=\"" + esc(l.url) + "\">Remove</button></span>" : "<span>" + esc(l.src) + "</span>") + "</div></div>";
+    return "<div class=\"lk\"><a href=\"" + esc(l.url) + "\" target=\"_blank\" rel=\"noopener\" dir=\"auto\">" + esc(l.title) + "</a><div class=\"meta\"><span>" + esc(host) + " · " + esc(l.group || "Other") + "</span>" + (S.isLead && !S.showHiddenLinks && sheetIdFromUrl(l.url) && !isKnownSheet(sheetIdFromUrl(l.url)) ? "<span><button class=\"link\" type=\"button\" data-lk-use=\"" + esc(l.url) + "\" data-lk-title=\"" + esc(l.title) + "\">Use its tabs in the dashboard</button></span>" : "") + (S.showHiddenLinks ? "<span><button class=\"link\" data-lk-restore=\"" + esc(l.url) + "\">Restore</button></span>" : l.id ? "<span><button class=\"link\" data-lk-del=\"" + esc(l.id) + "\">Remove</button></span>" : S.isLead ? "<span><button class=\"link\" data-lk-hide=\"" + esc(l.url) + "\">Remove</button></span>" : "<span>" + esc(l.src) + "</span>") + "</div></div>";
   }).join("") || "<p class=\"empty\">No links match.</p>";
 }
 function last7() { const days = []; for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(ymd(d)); } return days; }
@@ -649,10 +702,12 @@ function computeKpi(month, entries) {
         return { round: ed.round, fault: ed.fault, severity: ed.severity || "", reason: ed.reason || "", note: ed.note || "", at: ed.at, fixId: ed.fixId || "", fixDeadline: fix ? fix.deadline : "", fixDeadlineTime: fix ? fix.deadlineTime || "" : "", fixStatus: fix ? fix.status : "removed", fixRes: o.res, fixLate: o.late, pts, fixLoss: o.loss };
       });
       const editOff = edits.reduce((a, e) => a + e.pts + e.fixLoss, 0);
-      const kpi = timing == null ? null : Math.max(0, timing - editOff);
-      return { id: p.id, status: p.status, video: p.video, project: p.project || "", stage: p.stage || "", priority: p.priority || "normal", deadline: p.deadline, deadlineTime: p.deadlineTime || "", done: doneDay, res, late, timing, kpi, penalty, midDay: !!p.midDay, edits, editOff, fixOf: p.revisionOf || "", round: p.round || 0, fault: p.fault || "", editReason: p.editReason || "" };
+      let kpi = timing == null ? null : Math.max(0, timing - editOff);
+      const ov = p.kpiOverride && p.kpiOverride.pct != null && p.kpiOverride.pct !== "" ? p.kpiOverride : null;
+      if (ov) { kpi = clamp(+ov.pct); penalty = 0; }
+      return { id: p.id, status: p.status, video: p.video, project: p.project || "", stage: p.stage || "", priority: p.priority || "normal", deadline: p.deadline, deadlineTime: p.deadlineTime || "", done: doneDay, res, late, timing, kpi, penalty, midDay: !!p.midDay, edits, editOff, overridden: !!ov, ovNote: ov ? ov.note || "" : "", moved: p.deadlineChange ? p.deadlineChange.from || "" : "", fixOf: p.revisionOf || "", round: p.round || 0, fault: p.fault || "", editReason: p.editReason || "" };
     });
-    const counted = mine.filter(t => t.res !== "pending");
+    const counted = mine.filter(t => t.res !== "pending" || t.overridden);
     const onTime = counted.filter(t => t.res === "ontime").length;
     const avg = counted.length ? counted.reduce((a, t) => a + t.kpi, 0) / counted.length : null;
     const penalty = counted.reduce((a, t) => a + t.penalty, 0);
@@ -715,10 +770,11 @@ function kpiDetail(r) {
     (e.fault === "editor" ? " <span class=\"meta\">−" + e.pts + " pts" + (e.fixLoss ? " · fix late " + (e.fixLate ? e.fixLate + "d" : "after time") + " −" + e.fixLoss : "") + "</span>" : "") +
     " <span class=\"meta\">fix " + (e.fixStatus === "done" ? "done" : e.fixStatus === "removed" ? "removed" : "due " + (e.fixDeadline ? fmtDay(e.fixDeadline) + (e.fixDeadlineTime ? " " + esc(e.fixDeadlineTime) : "") : "—")) + "</span></div>").join("");
   const sendBtn = x => S.isLead && x.id && x.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(x.id) + "\">Send back for edits</button>" : "";
-  const kpiCell = x => (typeof RES[x.res] === "function" ? RES[x.res](x) : RES[x.res]) + (x.editOff && x.kpi != null ? " <span class=\"pill " + pc(x.kpi) + "\">after edits · " + Math.round(x.kpi) + "%</span>" : "");
+  const kpiCell = x => (typeof RES[x.res] === "function" ? RES[x.res](x) : RES[x.res]) + (x.overridden ? " <span class=\"pill acc\" title=\"" + esc(x.ovNote) + "\">set by lead · " + Math.round(x.kpi) + "%</span>" + (x.ovNote ? " <span class=\"meta\" dir=\"auto\">" + esc(x.ovNote) + "</span>" : "") : x.editOff && x.kpi != null ? " <span class=\"pill " + pc(x.kpi) + "\">after edits · " + Math.round(x.kpi) + "%</span>" : "");
+  const reviewBtn = x => S.isLead && x.id ? " <button class=\"btn small ghost\" type=\"button\" data-review=\"" + esc(x.id) + "\">Review</button>" : "";
   return "<h2>" + esc(r.name) + " · " + esc(monthLabel(S.kpiMonth)) + "</h2>" +
     "<h3 class=\"sub-h\">Tasks in this period <span class=\"meta\">(each task's own KPI)</span></h3>" + ((r.tasks || []).length ? "<div class=\"tscroll\"><table><thead><tr><th>Episode</th><th>Project · stage</th><th>Priority</th><th>Deadline</th><th>Finished</th><th>Task KPI</th></tr></thead><tbody>" +
-      r.tasks.slice().sort((a, b2) => a.deadline.localeCompare(b2.deadline)).map(x => "<tr><td class=\"code\">" + esc(x.video) + (x.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + fixTag(x) + "</td><td>" + esc(x.project) + " · " + esc(x.stage) + "</td><td>" + esc(x.priority) + "</td><td class=\"code\">" + fmtDay(x.deadline) + (x.deadlineTime ? " " + esc(x.deadlineTime) : "") + "</td><td class=\"code\">" + (x.done ? fmtDay(x.done) : "—") + "</td><td>" + kpiCell(x) + sendBtn(x) + editLines(x) + "</td></tr>").join("") + "</tbody></table></div>"
+      r.tasks.slice().sort((a, b2) => a.deadline.localeCompare(b2.deadline)).map(x => "<tr><td class=\"code\">" + esc(x.video) + (x.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + fixTag(x) + "</td><td>" + esc(x.project) + " · " + esc(x.stage) + "</td><td>" + esc(x.priority) + "</td><td class=\"code\">" + fmtDay(x.deadline) + (x.deadlineTime ? " " + esc(x.deadlineTime) : "") + (x.moved && x.moved !== x.deadline ? "<div class=\"meta\">moved from " + fmtDay(x.moved) + "</div>" : "") + "</td><td class=\"code\">" + (x.done ? fmtDay(x.done) : "—") + "</td><td>" + kpiCell(x) + reviewBtn(x) + sendBtn(x) + editLines(x) + "</td></tr>").join("") + "</tbody></table></div>"
       : "<p class=\"empty\">No tasks with a deadline in this period. Editors add tasks in SS Tracker under “Today's plan”.</p>") +
     "<h3 class=\"sub-h\">Hours and takes per day <span class=\"meta\">(number above each bar = takes)</span></h3><div class=\"tscroll\"><svg viewBox=\"0 0 " + (all.length * bw + 4) + " " + H + "\" width=\"" + (all.length * bw + 4) + "\" height=\"" + H + "\" role=\"img\" aria-label=\"Hours per day\">" + bars + "</svg></div>" +
     "<h3 class=\"sub-h\">Pause and hold reasons</h3>" + (reasons.length ? "<ul class=\"list\">" + reasons.map(([k, v]) => "<li><span class=\"grow\" dir=\"auto\">" + esc(k) + " " + (v.ex ? "<span class=\"pill ok\">excused</span>" : "") + "</span><span class=\"meta\">" + v.n + "×" + (v.min ? " · " + Math.round(v.min) + " min" : "") + "</span></li>").join("") + "</ul>" : "<p class=\"empty\">No pauses or holds this period.</p>");
@@ -733,6 +789,7 @@ function renderKpi() {
     fact("After 3 days", "From the 4th day late, every extra day takes " + kpiCfg().penaltyPerDay + " points off the editor's KPI for the period, until the task is finished.") +
     fact("Edits, his fault", "Mistakes, sync, wrong asset, not following the brief. The original task loses " + kpiCfg().editMinor + " points for a minor round and " + kpiCfg().editMajor + " for a major one. The fix doesn't add a task; if the fix is late, what it loses on the scale above also comes off the original task.") +
     fact("Edits, not his fault", "Script or content changes, client requests, late assets. The original keeps its score, and the fix is a new task scored like any other.") +
+    fact("Reviewed by a lead", "A lead can set any task's KPI by hand (Review button). That number replaces the automatic one for that task, with no late-day deductions. Moving a task's deadline rescores it against the new date.") +
     fact("The period's KPI", "Average of all task scores in the period (after edit deductions), minus late-day deductions (never below 0%).") +
     fact("Period", "From the 25th of one month to the 24th of the next. Tasks belong to the period their deadline falls in.") +
     fact("Upcoming tasks", "Tasks whose deadline hasn't arrived and aren't done yet don't count until they're finished or overdue.") +
@@ -835,7 +892,8 @@ const PLAN_PRIO = { high: 0, normal: 1, low: 2 }, PLAN_ST = { doing: 0, todo: 1,
 const isYmd = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
 function normPlan(id, d) {
   const p = { id, ...d };
-  if (isYmd(d.deadline) && !d.dueDate) return p;
+  if (isYmd(d.deadline) && !d.dueDate) { p._shape = "old"; return p; }
+  p._shape = "tracker";
   p.deadline = d.dueDate || d.date || "";
   p.deadlineTime = /^\d{1,2}:\d{2}$/.test(String(d.deadline || "")) ? d.deadline : "";
   p.planDate = d.date || "";
@@ -855,7 +913,7 @@ function planRow(p, withEditor) {
   const d = planDue(p);
   const st = { doing: "<span class=\"pill acc\">In progress</span>", todo: "<span class=\"pill\">Planned</span>", held: "<span class=\"pill warn\">On hold</span>", done: "<span class=\"pill ok\">Done</span>" }[p.status] || "";
   const prio = "<span class=\"pill " + (p.priority === "high" ? "bad" : p.priority === "low" ? "" : "warn") + "\">" + esc(p.priority || "normal") + "</span>";
-  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + (p.assignedBy && !p.revisionOf ? " <span class=\"pill acc\">assigned by " + esc(p.assignedBy) + "</span>" : "") + (p.needsEditing && !p.revisionOf && p.status !== "done" ? " <span class=\"pill bad\">needs editing</span>" : "") + (p.revisionOf ? " <span class=\"pill " + (p.fault === "editor" ? "bad" : "acc") + "\">Edits round " + (p.round || "") + "</span>" : "") + (S.isLead && p.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(p.id) + "\">Send back for edits</button>" : "") + "</td></tr>";
+  return "<tr><td>" + prio + "</td>" + (withEditor ? "<td>" + esc(p.editor) + "</td>" : "") + "<td class=\"code\">" + esc(p.video) + "</td><td>" + esc(p.project || "") + " · " + esc(p.stage || "") + "</td><td class=\"code when " + d.cls + "\">" + esc(d.label) + "</td><td>" + st + (p.midDay ? " <span class=\"pill warn\">mid-day</span>" : "") + (p.planDate && p.planDate < today() && p.status !== "done" ? " <span class=\"pill acc\">carried over</span>" : "") + (p.status === "held" && p.holdReason ? " <span class=\"meta\" dir=\"auto\">" + esc(p.holdReason) + "</span>" : "") + (p.assignedBy && !p.revisionOf ? " <span class=\"pill acc\">assigned by " + esc(p.assignedBy) + "</span>" : "") + (p.needsEditing && !p.revisionOf && p.status !== "done" ? " <span class=\"pill bad\">needs editing</span>" : "") + (p.revisionOf ? " <span class=\"pill " + (p.fault === "editor" ? "bad" : "acc") + "\">Edits round " + (p.round || "") + "</span>" : "") + (S.isLead && p.status !== "dropped" ? " <button class=\"btn small ghost\" type=\"button\" data-review=\"" + esc(p.id) + "\">Review</button>" : "") + (S.isLead && p.status === "done" ? " <button class=\"btn small ghost\" type=\"button\" data-sendback=\"" + esc(p.id) + "\">Send back for edits</button>" : "") + "</td></tr>";
 }
 function planTable(list, withEditor) {
   if (!list.length) return "<p class=\"empty\">No plan yet. Editors add their episodes in SS Tracker under “Today's plan”.</p>";
@@ -917,12 +975,48 @@ async function sendBack(form) {
   } catch (err) { btn.disabled = false; $("#edMsg").textContent = "Couldn't send. Check your connection."; }
 }
 $("#editDlg").addEventListener("change", e => {
+  if (e.target.id === "rvPct") { const r = document.querySelector("[name=rvMode][value=set]"); if (r) r.checked = true; }
   if (e.target.name === "edFault") { const k = e.target.value, sel = $("#edReason"); sel.innerHTML = sel.dataset[k]; $("#edSevBox").hidden = k !== "editor"; }
 });
-$("#editDlg").addEventListener("submit", e => { e.preventDefault(); sendBack(e.target); });
+$("#editDlg").addEventListener("submit", e => { e.preventDefault(); if (e.target.id === "rvForm") saveReview(e.target); else sendBack(e.target); });
 $("#editDlg").addEventListener("click", e => { if (e.target.id === "editDlg" || e.target.closest("[data-ed-close]")) $("#editDlg").hidden = true; });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#editDlg").hidden) $("#editDlg").hidden = true; });
 document.addEventListener("click", e => { const b = e.target.closest("[data-sendback]"); if (b) { e.stopPropagation(); openSendBack(b.dataset.sendback); } }, true);
+
+/* ---------- review a task: set its KPI by hand and/or move its deadline ---------- */
+function openReview(id) {
+  const p = (S.plans || []).find(x => x.id === id); if (!p) return;
+  const ov = p.kpiOverride && p.kpiOverride.pct != null && p.kpiOverride.pct !== "" ? p.kpiOverride : null;
+  const dlg = $("#editDlg");
+  dlg.innerHTML = "<div class=\"modal-box\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"rvH\"><h2 id=\"rvH\">Review task</h2>" +
+    "<p class=\"meta\"><b>" + esc(p.video) + "</b> · " + esc(p.project || "") + " · " + esc(p.stage || "") + " · " + esc(p.editor) + " · " + esc({ todo: "planned", doing: "in progress", held: "on hold", done: "done " + fmtDay((p.doneAt || "").slice(0, 10)) }[p.status] || p.status) + "</p>" +
+    "<form id=\"rvForm\" class=\"ed-form\" data-id=\"" + esc(id) + "\">" +
+    "<fieldset><legend>KPI for this task</legend>" +
+    "<label><input type=\"radio\" name=\"rvMode\" value=\"auto\"" + (ov ? "" : " checked") + "> Automatic <span class=\"meta\">(from the deadline and edit rounds)</span></label>" +
+    "<label><input type=\"radio\" name=\"rvMode\" value=\"set\"" + (ov ? " checked" : "") + "> Set it to <input id=\"rvPct\" type=\"number\" min=\"0\" max=\"100\" step=\"1\" style=\"width:90px\" value=\"" + (ov ? esc(ov.pct) : "") + "\"> %</label>" +
+    "<label class=\"f\">Why <span class=\"meta\">(the editor sees this)</span><input id=\"rvNote\" maxlength=\"160\" dir=\"auto\" value=\"" + esc(ov ? ov.note || "" : "") + "\" placeholder=\"e.g. deadline was unrealistic, approved extra time\"></label></fieldset>" +
+    "<fieldset><legend>Deadline</legend><div class=\"inline-row\"><label class=\"f\">Date<input id=\"rvDate\" type=\"date\" required value=\"" + esc(p.deadline || "") + "\"></label><label class=\"f\">Time (optional)<input id=\"rvTime\" type=\"time\" value=\"" + esc(p.deadlineTime || "") + "\"></label></div>" +
+    (p.deadlineChange && p.deadlineChange.from ? "<p class=\"meta\">Originally due " + fmtDay(p.deadlineChange.from) + (p.deadlineChange.fromTime ? " " + esc(p.deadlineChange.fromTime) : "") + ".</p>" : "") +
+    (p.source === "sheet" ? "<p class=\"meta\">This task comes from the Production Plan sheet. If its date changes in the sheet later, the sheet's date wins. To move it for good, change it in the sheet.</p>" : "") + "</fieldset>" +
+    "<div class=\"inline-row\"><button class=\"btn\" type=\"submit\">Save</button><button class=\"btn ghost\" type=\"button\" data-ed-close>Cancel</button><span class=\"meta\" id=\"rvMsg\"></span></div></form></div>";
+  dlg.hidden = false;
+}
+async function saveReview(form) {
+  const id = form.dataset.id, p = (S.plans || []).find(x => x.id === id); if (!p) return;
+  const mode = form.querySelector("[name=rvMode]:checked").value, pct = $("#rvPct").value, date = $("#rvDate").value, time = $("#rvTime").value || "";
+  if (mode === "set" && (pct === "" || +pct < 0 || +pct > 100)) { $("#rvMsg").textContent = "Enter a percentage from 0 to 100."; return; }
+  if (!date) { $("#rvMsg").textContent = "Pick a deadline date."; return; }
+  const up = { kpiOverride: mode === "set" ? { pct: Math.round(+pct), note: $("#rvNote").value.trim(), by: S.email, at: Date.now() } : null };
+  if (date !== p.deadline || time !== (p.deadlineTime || "")) {
+    if (p._shape === "old") { up.deadline = date; up.deadlineTime = time; } else { up.dueDate = date; up.deadline = time; }
+    if (!p.deadlineChange) up.deadlineChange = { from: p.deadline || "", fromTime: p.deadlineTime || "", by: S.email, at: Date.now() };
+    else up.deadlineChange = { ...p.deadlineChange, lastBy: S.email, lastAt: Date.now() };
+  }
+  const btn = form.querySelector("[type=submit]"); btn.disabled = true; $("#rvMsg").textContent = "Saving…";
+  try { await updateDoc(doc(db, "plans", id), up); $("#editDlg").hidden = true; }
+  catch (err) { btn.disabled = false; $("#rvMsg").textContent = "Couldn't save. Check your connection."; }
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-review]"); if (b) { e.stopPropagation(); openReview(b.dataset.review); } }, true);
 
 /* ---------- edit rounds review (leads) ---------- */
 function renderEditReview() {
@@ -1028,6 +1122,26 @@ document.addEventListener("click", async e => {
   if (t.dataset.lkDel) { const id = t.dataset.lkDel; confirmIn(t.parentElement, "Remove?", () => deleteDoc(doc(db, "dash_links", id)).catch(() => { })); }
   if (t.dataset.roleDel) { const id = t.dataset.roleDel; confirmIn(t.parentElement, "Remove access?", () => deleteDoc(doc(db, "dash_roles", id)).catch(() => { })); }
 });
+/* change a deadline's date (sheet deadlines are moved on the dashboard; team deadlines are edited directly) */
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-dl-move]");
+  if (b) {
+    const box = b.parentElement.querySelector(".dl-move-box"); if (!box) return;
+    const key = b.dataset.dlMove, was = b.dataset.dlWas;
+    box.innerHTML = " <span class=\"dl-move\"><input type=\"date\" value=\"" + esc(b.dataset.dlDate) + "\" aria-label=\"New date\"><button class=\"btn small\" type=\"button\" data-dl-move-save=\"" + esc(key) + "\">Save</button>" + (was && !key.startsWith("custom:") ? "<button class=\"link\" type=\"button\" data-dl-move-reset=\"" + esc(key) + "\">Back to sheet date (" + fmtDay(was) + ")</button>" : "") + "<button class=\"link\" type=\"button\" data-dl-move-cancel>Cancel</button></span>";
+    box.querySelector("input").focus(); return;
+  }
+  const sv = e.target.closest("[data-dl-move-save]"), rs = e.target.closest("[data-dl-move-reset]"), cc = e.target.closest("[data-dl-move-cancel]");
+  if (cc) { cc.closest(".dl-move-box").innerHTML = ""; return; }
+  if (sv || rs) {
+    const key = (sv || rs).dataset[sv ? "dlMoveSave" : "dlMoveReset"], val = sv ? sv.parentElement.querySelector("input").value : null;
+    if (sv && !val) return;
+    try {
+      if (key.startsWith("custom:")) await updateDoc(doc(db, "dash_deadlines", key.slice(7)), { date: val });
+      else { const mv = { ...(S.dlMoves || {}) }; if (rs) delete mv[key]; else mv[key] = { date: val, by: S.email, at: Date.now() }; await setDoc(doc(db, "dash_settings", "deadlines"), { moved: mv }); }
+    } catch (err) { (sv || rs).textContent = "Couldn't save"; }
+  }
+});
 $("#dlForm").addEventListener("submit", async e => {
   e.preventDefault();
   const data = { title: $("#dlTitle").value.trim(), date: $("#dlDate").value, project: $("#dlProject").value.trim(), priority: $("#dlPrio").value, done: false, by: S.email, at: Date.now() };
@@ -1035,10 +1149,17 @@ $("#dlForm").addEventListener("submit", async e => {
   try { await addDoc(collection(db, "dash_deadlines"), data); e.target.reset(); $("#dlMsg").textContent = "Added."; }
   catch (err) { $("#dlMsg").textContent = "Couldn't add it. Check your connection and try again."; }
 });
+$("#lkUrl").addEventListener("input", () => { $("#lkSheetRow").hidden = !(S.isLead && sheetIdFromUrl($("#lkUrl").value)); });
 $("#lkForm").addEventListener("submit", async e => {
   e.preventDefault();
   const url = $("#lkUrl").value.trim(); if (!/^https?:\/\//i.test(url)) return;
-  try { await addDoc(collection(db, "dash_links"), { title: $("#lkTitle").value.trim(), url, group: $("#lkGroup").value.trim() || "Other", by: S.email, at: Date.now() }); e.target.reset(); } catch (err) { }
+  const title = $("#lkTitle").value.trim(), useSheet = S.isLead && $("#lkUseSheet").checked && sheetIdFromUrl(url);
+  try {
+    if (useSheet) { await addExtraSheet(url, title); }   // a Google Sheet is connected as a data source; it's listed under Sheets
+    else await addDoc(collection(db, "dash_links"), { title, url, group: $("#lkGroup").value.trim() || "Other", by: S.email, at: Date.now() });
+    e.target.reset(); $("#lkSheetRow").hidden = true;
+    $("#lkMsg").textContent = useSheet ? "Sheet connected. Its tabs show up within about a minute: pick them with “Choose sheet tabs” on Projects, Overview or Deadlines." : "";
+  } catch (err) { $("#lkMsg").textContent = "Couldn't add it."; }
 });
 $("#roleForm").addEventListener("submit", async e => {
   e.preventDefault();
@@ -1054,14 +1175,19 @@ function renderResetBtn() { document.querySelectorAll(".tab-tools").forEach(t =>
 function renderSrcPanel(tabKey) {
   const box = $("#src-" + tabKey), cfg = srcCfg(), chosen = new Set(cfg[tabKey] || []);
   const tabs = S.allTabs || [];
-  const bySheet = Object.keys(SHEET_LABEL).map(k => ({ k, tabs: tabs.filter(t => t.key === k) })).filter(g => g.tabs.length);
+  const bySheet = sheetKeys().map(k => ({ k, tabs: tabs.filter(t => t.key === k) })).filter(g => g.tabs.length);
   const useful = t => tabKey === "links" ? t.kinds.includes("links") : tabKey === "projects" ? t.kinds.some(k => k === "tracker" || k === "reshoot") : tabKey === "deadlines" ? t.kinds.some(k => k === "timeline" || k === "calendar") : t.kinds.some(k => k !== "links");
   let html = "<div class=\"src-box\"><div class=\"src-head\"><b>Sheet tabs shown in " + SRC_TABS[tabKey] + "</b><span class=\"meta\">Tick the tabs this page should use. Faded tabs have nothing this page can use (for Links: no links in the tab), but you can still tick them.</span></div>" +
-    (tabs.length ? bySheet.map(g => "<div class=\"src-sheet\"><div class=\"sub-h\">" + esc(SHEET_LABEL[g.k]) + "</div><div class=\"tab-picks\">" + g.tabs.map(t => {
+    (tabs.length ? bySheet.map(g => "<div class=\"src-sheet\"><div class=\"sub-h\">" + esc(sheetLabel(g.k)) + "</div><div class=\"tab-picks\">" + g.tabs.map(t => {
       const n = tabLinkCount(t.tab);
       const kinds = t.kinds.filter(k => tabKey === "links" ? k === "links" : k !== "links").map(k => KIND_LABEL[k] + (k === "links" ? " · " + n : "")).join(", ") || (tabKey === "links" ? "No links found" : "Nothing this page can use");
       return "<label class=\"tab-pick" + (useful(t) ? "" : " none") + "\"><input type=\"checkbox\" data-src-tab=\"" + esc(t.id) + "\"" + (chosen.has(t.id) ? " checked" : "") + "> <span><b>" + esc(t.tab.name.trim()) + "</b><span class=\"meta\"> · " + esc(kinds) + "</span></span></label>";
     }).join("") + "</div></div>").join("") : "<p class=\"empty\">Sheet tabs appear after the first sheet sync.</p>");
+  const ex = S.extraSheets || [];
+  html += "<div class=\"sub-h\">Other Google Sheets</div><p class=\"meta\">Add any Google Sheet and its tabs appear above for every dashboard tab, within about a minute. The sheet must be shared with adham.youssry@sciencestreets.com (the account that runs the sync).</p>" +
+    (ex.length ? "<ul class=\"list\">" + ex.map(x => { const err = S.rawErr[x.key], ok = !!S.raw[x.key];
+      return "<li><span class=\"grow\"><a href=\"https://docs.google.com/spreadsheets/d/" + esc(x.id) + "/edit\" target=\"_blank\" rel=\"noopener\">" + esc(sheetLabel(x.key)) + "</a> " + (err ? "<span class=\"pill bad\">Can't open it: share it with adham.youssry@sciencestreets.com</span>" : ok ? "<span class=\"pill ok\">" + ((S.raw[x.key].tabs || []).length) + " tabs read</span>" : "<span class=\"pill\">Waiting for the sync (up to a minute)</span>") + "</span><span><button class=\"link\" type=\"button\" data-xs-del=\"" + esc(x.key) + "\">Remove</button></span></li>"; }).join("") + "</ul>" : "") +
+    "<div class=\"inline-row\"><label class=\"f\" style=\"flex:2 1 260px\">Google Sheet link<input data-xs-url=\"" + tabKey + "\" type=\"url\" placeholder=\"https://docs.google.com/spreadsheets/d/…\"></label><label class=\"f\">Name<input data-xs-title=\"" + tabKey + "\" maxlength=\"60\" placeholder=\"G07 production plan\"></label><button class=\"btn ghost\" type=\"button\" data-xs-add=\"" + tabKey + "\">Add sheet</button><span class=\"meta\" data-xs-msg=\"" + tabKey + "\"></span></div>";
   if (tabKey === "projects" && (S.allProjects || []).length) {
     const pc = cfg.projectCfg || {};
     html += "<div class=\"sub-h\">Rename or override progress</div><p class=\"meta\">Leave empty to use what the sheet says.</p><div class=\"tscroll\"><table><thead><tr><th>Sheet tab</th><th>Name on dashboard</th><th style=\"text-align:end\">From sheet</th><th>Set done</th><th>Set total</th></tr></thead><tbody>" +
@@ -1074,6 +1200,7 @@ async function saveSrc(tabKey, ids, extra) {
   const c = srcCfg();
   const data = { overview: c.overview, projects: c.projects, deadlines: c.deadlines, links: c.links, projectCfg: c.projectCfg, by: S.email, at: Date.now() };
   data[tabKey] = ids; if (extra) Object.assign(data, extra);
+  data.knownKeys = sheetKeys().filter(k => S.raw[k]);
   await setDoc(doc(db, "dash_settings", "sources"), data);
 }
 function resetPlan(tabKey) {
@@ -1105,7 +1232,7 @@ async function runTabReset(tabKey, btn) {
   try {
     if (tabKey === "overview") await saveSrc("overview", []);
     if (tabKey === "projects") { await saveSrc("projects", [], { projectCfg: {} }); await Promise.all(Object.keys(S.flags || {}).map(k => del("dash_flags", k))); }
-    if (tabKey === "deadlines") { await saveSrc("deadlines", []); await Promise.all(S.deadlines.map(d => del("dash_deadlines", d.id))); }
+    if (tabKey === "deadlines") { await saveSrc("deadlines", []); await Promise.all(S.deadlines.map(d => del("dash_deadlines", d.id))); await setDoc(doc(db, "dash_settings", "deadlines"), { moved: {} }).catch(() => { }); }
     if (tabKey === "links") { await saveSrc("links", []); await Promise.all(S.links.map(l => del("dash_links", l.id))); await setDoc(doc(db, "dash_settings", "links"), { hidden: [] }).catch(() => { }); }
     if (tabKey === "kpi" || tabKey === "team") {
       msg.textContent = "Saving every period's KPI…"; await snapshotAllPeriods();
@@ -1134,6 +1261,13 @@ document.addEventListener("click", async e => {
     if (k === "projects") { const pc = {}; document.querySelectorAll("#src-projects [data-proj-row]").forEach(tr => { const done = tr.querySelector(".ps-done").value, total = tr.querySelector(".ps-total").value, name = tr.querySelector(".ps-name").value.trim(); if (name || done !== "" || total !== "") pc[tr.dataset.projRow] = { name, done: done === "" ? null : +done, total: total === "" ? null : +total }; }); extra = { projectCfg: pc }; }
     try { await saveSrc(k, ids, extra); msg.textContent = "Saved for everyone."; } catch (err) { msg.textContent = "Couldn't save. Only leads can change this."; }
   }
+  if (t.dataset.xsAdd) {
+    const k = t.dataset.xsAdd, url = document.querySelector("[data-xs-url=\"" + k + "\"]").value.trim(), title = document.querySelector("[data-xs-title=\"" + k + "\"]").value.trim(), msg = document.querySelector("[data-xs-msg=\"" + k + "\"]");
+    if (!sheetIdFromUrl(url)) { msg.textContent = "Paste a Google Sheets link (docs.google.com/spreadsheets/…)."; return; }
+    try { const r = await addExtraSheet(url, title); msg.textContent = r === "already" ? "That sheet is already connected." : "Added. Its tabs appear here within about a minute."; } catch (err) { msg.textContent = "Couldn't add it. Only leads can change this."; }
+  }
+  if (t.dataset.xsDel) { const k = t.dataset.xsDel; confirmIn(t.parentElement, "Remove this sheet?", () => removeExtraSheet(k).catch(() => { })); }
+  if (t.dataset.lkUse) { t.disabled = true; addExtraSheet(t.dataset.lkUse, t.dataset.lkTitle).then(r => { t.textContent = r === "already" ? "Already connected" : "Connected ✓"; }).catch(() => { t.textContent = "Couldn't add"; }); }
   if (t.dataset.rsOpen) openTabReset(t.dataset.rsOpen);
   if (t.dataset.rsCancel) $("#rs-" + t.dataset.rsCancel).hidden = true;
   if (t.dataset.rsGo) runTabReset(t.dataset.rsGo, t);
@@ -1176,6 +1310,8 @@ onAuthStateChanged(auth, async user => {
   }));
   live(collection(db, "dash_deadlines"), s => { S.deadlines = s.docs.map(d => ({ id: d.id, ...d.data() })); withOverviewData(renderOverview); renderDeadlines(); });
   live(doc(db, "dash_settings", "sources"), snap => { S.srcSettings = snap.exists() ? snap.data() : null; applySheets(); });
+  live(doc(db, "dash_settings", "deadlines"), snap => { S.dlMoves = snap.exists() ? (snap.data().moved || {}) : {}; applySheets(); });
+  live(doc(db, "dash_settings", "extraSheets"), snap => { S.extraSheets = snap.exists() ? (snap.data().list || []) : []; watchExtraSheets(); applySheets(); });
   live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });

@@ -257,3 +257,7 @@ button.btn.danger-solid{background:var(--bad-fill);color:#fff}
 .ed-form .inline-row .f{flex:1 1 140px}
 .edit-line{margin-top:4px;font-size:12px}
 .ed-form > .f,.ed-form > fieldset,.ed-form > .inline-row{flex:none;margin:0}
+
+.dl-move{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-inline-start:6px}
+.dl-move input{width:auto;padding:3px 6px}
+.lk-sheet span{display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0;font-weight:500}

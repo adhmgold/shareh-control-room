@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=12">
+<link rel="stylesheet" href="styles.css?v=13">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -120,8 +120,10 @@
           <label class="f">Title<input id="lkTitle" required maxlength="100" placeholder="G06 Unit 3 Drive folder"></label>
           <label class="f">Link<input id="lkUrl" type="url" required placeholder="https://"></label>
           <label class="f">Group<input id="lkGroup" list="groupList" maxlength="40" placeholder="Drive"></label>
+          <label class="f lk-sheet" id="lkSheetRow" hidden style="flex-basis:100%"><span><input type="checkbox" id="lkUseSheet" checked style="width:auto"> Read this Google Sheet's tabs into the dashboard (Projects, Overview, Deadlines)</span></label>
           <button class="btn" type="submit">Add link</button>
         </form>
+        <p class="meta" id="lkMsg"></p>
         <datalist id="groupList"><option>Sheets</option><option>Scripts</option><option>Drive</option><option>Frame.io</option><option>YouTube</option></datalist>
         <label class="f" style="max-width:320px;margin-bottom:10px">Search links<input id="lkSearch" type="search" placeholder="Script, Drive, Frame.io…"></label>
         <div class="chips" id="lkChips"></div>
@@ -196,7 +198,7 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=12"></script>
+<script type="module" src="app.js?v=13"></script>
 <div id="editDlg" class="modal" hidden></div>
 </body>
 </html>
