@@ -267,3 +267,11 @@ button.btn.danger-solid{background:var(--bad-fill);color:#fff}
 .kp-row .meta{grid-column:1/-1;font-size:11px}
 .kp-row b.ok{color:var(--ok)} .kp-row b.acc{color:var(--accent)} .kp-row b.warn{color:var(--warn)} .kp-row b.bad{color:var(--bad)}
 .raw-path{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;white-space:normal}
+
+.avail-panel{margin-top:16px}
+.av-head{margin:0 0 6px}
+.av-list li{align-items:center}
+.av-name{flex:0 0 120px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.av-list li.av-free .av-name b{color:var(--bad)}
+.av-list li.av-away{opacity:.6}
+@media (max-width:600px){.av-list li{flex-wrap:wrap}.av-name{flex-basis:100%}}

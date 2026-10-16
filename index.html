@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=14">
+<link rel="stylesheet" href="styles.css?v=15">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -58,6 +58,7 @@
       <div class="kpi" id="k-late-box"><div class="lab">Overdue</div><div class="val" id="k-late">—</div><div class="sub" id="k-late-s">click to filter</div></div>
       <div class="kpi"><div class="lab">Editing now</div><div class="val" id="k-now">—</div><div class="sub" id="k-now-s">SS Tracker timers</div></div>
     </div>
+    <div class="panel avail-panel" id="availPanel" hidden><h2>Who's free <span class="aside">editors with no open task in SS Tracker · live</span></h2><div id="availList"></div></div>
     <div class="grid" style="margin-top:16px">
       <div class="panel span5"><h2>Next deadlines <span class="aside">Timeline, calendar &amp; team</span></h2><ul class="list" id="ov-deadlines"></ul></div>
       <div class="panel span7"><h2>Project progress <span class="aside">Master tracker tabs</span></h2>
@@ -181,6 +182,7 @@
     <div class="tab-tools" hidden><button class="btn ghost small-reset rs-btn" type="button" data-rs-open="team">↺ Reset tab</button></div>
     <div id="rs-team" hidden></div>
     <div class="grid">
+      <div class="panel span12"><h2>Who's free <span class="aside">editors with no open task in SS Tracker · live</span></h2><div id="teamAvail"></div></div>
       <div class="panel span12"><h2>Today's plans <span class="aside">what each editor planned in SS Tracker · click a name</span></h2><div id="teamPlanSummary"></div><div id="teamPlanList"></div></div>
       <div class="panel span12"><h2>Team hours <span class="aside">hours logged in SS Tracker, last 7 days</span></h2><div class="tscroll" id="teamTable"></div></div>
       <div class="panel span12"><h2>Entries</h2>
@@ -204,7 +206,7 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=14"></script>
+<script type="module" src="app.js?v=15"></script>
 <div id="editDlg" class="modal" hidden></div>
 </body>
 </html>

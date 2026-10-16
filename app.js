@@ -525,7 +525,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderPlans(); renderResetBtn(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderPlans(); renderAvailability(); renderResetBtn(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -1116,6 +1116,52 @@ async function removeEdit(rootId, i) {
 $("#erList").addEventListener("change", e => { const s2 = e.target.closest("[data-er-set]"); if (s2) changeEdit(s2.dataset.erSet, +s2.dataset.i, s2.value); });
 $("#erList").addEventListener("click", e => { const t = e.target.closest("[data-er-del]"); if (t) { const id = t.dataset.erDel, i = +t.dataset.i; confirmIn(t.parentElement, "Remove this round and its fix task?", () => removeEdit(id, i)); } });
 
+/* ---------- who's free: editors with no open task (leads) ----------
+   Open task = a plan item that isn't done or removed. Tasks on hold don't keep an editor busy.
+   Roster = SS Tracker editors (config/credentials), plus anyone with tasks or takes. */
+function availability() {
+  const t = today(), now = Date.now(), lv = leaveMap(kpiCfg().leave), hol = new Set(dateList(kpiCfg().holidays));
+  const names = [...new Set([...(S.roster || []), ...(S.plans || []).map(p => p.editor), ...S.takes.map(x => x.editor)].filter(Boolean))].sort();
+  return names.map(n => {
+    const mine = (S.plans || []).filter(p => p.editor === n);
+    const open = mine.filter(p => p.status === "todo" || p.status === "doing");
+    const held = mine.filter(p => p.status === "held");
+    const take = S.takes.find(x => x.editor === n);
+    const doneTimes = mine.filter(p => p.status === "done" && p.doneAt).map(p => new Date(p.doneAt).getTime()).filter(x => !isNaN(x));
+    const lastDone = doneTimes.length ? Math.max(...doneTimes) : null;
+    const next = open.filter(p => p.deadline).sort((a, b) => (a.deadline + (a.deadlineTime || "99")).localeCompare(b.deadline + (b.deadlineTime || "99")))[0];
+    const dueToday = open.filter(p => p.deadline && p.deadline <= t).length;
+    const take0 = S.takes.find(x => x.editor === n);
+    const away = take0 ? "" : (lv[n.toLowerCase()] || []).includes(t) ? "On leave today" : hol.has(t) ? "Public holiday" : "";
+    let state = open.length ? (take ? "working" : "idle") : (take ? "untracked" : "free");
+    return { name: n, state, open, held, take, lastDone, next, dueToday, away, freeFor: state === "free" && lastDone ? now - lastDone : null };
+  });
+}
+const AV_ORDER = { free: 0, untracked: 1, idle: 2, working: 3 };
+function avAgo(ms) { const m = Math.round(ms / 60000); return m < 60 ? m + " min" : m < 1440 ? Math.round(m / 60) + " h" : Math.round(m / 1440) + " d"; }
+function renderAvailability() {
+  const boxes = ["#availList", "#teamAvail"].map(id => $(id)).filter(Boolean);
+  const panel = $("#availPanel"); if (panel) panel.hidden = !S.isLead;
+  if (!S.isLead || !boxes.length) return;
+  const rows = availability().sort((a, b) => (!!a.away - !!b.away) || (AV_ORDER[a.state] - AV_ORDER[b.state]) || (b.freeFor || 0) - (a.freeFor || 0) || a.name.localeCompare(b.name));
+  const free = rows.filter(r => !r.away && (r.state === "free" || r.state === "untracked"));
+  const head = (isWeekend(today()) ? "<span class=\"pill\">Friday · weekend</span> " : "") + (free.length ? "<b>" + free.length + " free</b> · " + free.map(r => esc(r.name)).join(", ") : "Everyone has work");
+  const pill = r => r.away ? "<span class=\"pill\">" + esc(r.away) + "</span>" : {
+    free: "<span class=\"pill bad\">Free · no tasks</span>",
+    untracked: "<span class=\"pill warn\">No tasks · timer running</span>",
+    idle: "<span class=\"pill acc\">Has tasks · not working now</span>",
+    working: "<span class=\"pill ok\">Working now</span>" }[r.state];
+  const detail = r => {
+    if (r.state === "working") return "On <span class=\"code\">" + esc(r.take.video) + "</span> " + esc(r.take.stage || "") + (r.take.pausedAt ? " <span class=\"pill warn\">paused</span>" : "") + " · " + r.open.length + " open task" + (r.open.length > 1 ? "s" : "");
+    if (r.state === "untracked") return "Timer on <span class=\"code\">" + esc(r.take.video) + "</span>, but nothing in his plan";
+    if (r.state === "idle") return r.open.length + " open task" + (r.open.length > 1 ? "s" : "") + (r.dueToday ? " · <b>" + r.dueToday + " due today or overdue</b>" : "") + (r.next ? " · next: <span class=\"code\">" + esc(r.next.video) + "</span> due " + fmtDay(r.next.deadline) + (r.next.deadlineTime ? " " + esc(r.next.deadlineTime) : "") : "");
+    return (r.lastDone ? "Last task finished " + avAgo(Date.now() - r.lastDone) + " ago" : "No tasks yet") + (r.held.length ? " · " + r.held.length + " on hold" : "");
+  };
+  const html = "<p class=\"av-head\">" + head + "</p><ul class=\"list av-list\">" + rows.map(r => "<li class=\"av-" + (r.away ? "away" : r.state) + "\"><span class=\"av-name\"><b>" + esc(r.name) + "</b></span><span class=\"grow\">" + pill(r) + " <span class=\"meta\">" + detail(r) + "</span></span></li>").join("") + "</ul>";
+  boxes.forEach(b => { b.innerHTML = rows.length ? html : "<p class=\"empty\">No editors yet.</p>"; });
+  const k = $("#k-free"); if (k) k.textContent = free.length + " free";
+}
+
 /* ---------- UI events ---------- */
 function showTab(v) { document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v))); document.querySelectorAll("section.view").forEach(s => s.classList.toggle("on", s.id === "v-" + v)); try { localStorage.setItem("scr-tab", v); } catch (e) { } }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button[data-v]"); if (b) { $("#globalSearch").value = ""; renderSearch(); showTab(b.dataset.v); } });
@@ -1168,7 +1214,7 @@ function subscribeMyKpi() {
   [S.kpiMonth, prevMonth(S.kpiMonth)].forEach(m => myKpiUnsubs.push(onSnapshot(doc(db, "dash_kpi", m, "editors", S.myName), snap => { S.kpiMine[m] = snap.exists() ? snap.data() : null; renderKpi(); }, () => { })));
 }
 
-setInterval(() => { withOverviewData(renderOverview); renderMyWork(); setSync(); }, 30000);
+setInterval(() => { withOverviewData(renderOverview); renderMyWork(); renderAvailability(); setSync(); }, 30000);
 
 function confirmIn(wrap, label, onYes) {
   const orig = wrap.innerHTML;
@@ -1378,15 +1424,15 @@ onAuthStateChanged(auth, async user => {
   live(doc(db, "dash_settings", "deadlines"), snap => { S.dlMoves = snap.exists() ? (snap.data().moved || {}) : {}; applySheets(); });
   live(doc(db, "dash_settings", "extraSheets"), snap => { S.extraSheets = snap.exists() ? (snap.data().list || []) : []; watchExtraSheets(); applySheets(); });
   live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
-  if (S.isLead) live(doc(db, "config", "credentials"), snap => { S.roster = snap.exists() ? Object.keys(snap.data().editors || {}).sort() : []; renderKpi(); });
+  if (S.isLead) live(doc(db, "config", "credentials"), snap => { S.roster = snap.exists() ? Object.keys(snap.data().editors || {}).sort() : []; renderKpi(); renderAvailability(); });
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
-  live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); });
+  live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); renderAvailability(); });
   if (S.isLead) {
     live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
-    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); renderKpi(); renderEditReview(); });
+    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); renderKpi(); renderEditReview(); renderAvailability(); });
     live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
