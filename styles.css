@@ -275,3 +275,16 @@ button.btn.danger-solid{background:var(--bad-fill);color:#fff}
 .av-list li.av-free .av-name b{color:var(--bad)}
 .av-list li.av-away{opacity:.6}
 @media (max-width:600px){.av-list li{flex-wrap:wrap}.av-name{flex-basis:100%}}
+
+/* opened inside SS Tracker: compact header, more room for content */
+html.embedded .top-in{padding-block:6px 0;gap:6px}
+html.embedded .brandrow{padding:6px 14px;border-width:2px;box-shadow:0 2px 0 var(--ink)}
+html.embedded .brandrow::before,html.embedded .brandrow::after{display:none}
+html.embedded .logo-chip{padding:2px 6px}
+html.embedded .logo-chip img{height:24px}
+html.embedded h1{font-size:17px}
+html.embedded .brand-sub,html.embedded h1 small{display:none}
+html.embedded nav.tabs{padding:3px}
+html.embedded nav.tabs button{padding:6px 10px}
+html.embedded .prio-bar{padding-block:6px 8px}
+html.embedded .wrap{padding-block-end:64px}

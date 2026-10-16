@@ -22,6 +22,8 @@ const trackerAuth = getAuth(trackerApp);
 const trackerDb = getFirestore(trackerApp);
 const EMBED = /[?&]embed=1/.test(location.search);
 if (EMBED) document.documentElement.classList.add("embedded");
+// Esc inside the embedded Control Room takes you back to SS Tracker (unless a dialog is open)
+if (EMBED) document.addEventListener("keydown", e => { if (e.key === "Escape" && (!document.getElementById("editDlg") || document.getElementById("editDlg").hidden)) { try { parent.postMessage("cr-close", location.origin); } catch (err) { } } });
 async function trackerLogin() {
   try {
     if (trackerAuth.authStateReady) await trackerAuth.authStateReady();
