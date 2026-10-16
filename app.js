@@ -693,7 +693,7 @@ function leaveMap(text) {
   return m;
 }
 function attendance(name, list, b, cfg) {
-  const todayK = today(), hol = new Set(dateList(cfg.holidays)), lv = new Set((leaveMap(cfg.leave)[String(name).toLowerCase()] || []));
+  const todayK = today(), hol = new Set(dateList(cfg.holidays)), lm = leaveMap(cfg.leave), lv = new Set([name, ...oldNamesOf(name)].flatMap(n => lm[String(n).toLowerCase()] || []));
   const workedDays = new Set(list.filter(e => entryHours(e) > 0 || e.date).map(e => e.date));
   const work = [], off = [];
   for (let d = parseYmd(b.start); ymd(d) <= b.end; d.setDate(d.getDate() + 1)) {
@@ -859,7 +859,7 @@ function renderKpi() {
     "</div><p class=\"meta\">The current period updates live.</p>";
   $("#kpiSettingsPanel").hidden = !S.isLead;
   if (S.isLead) {
-    const fromSnap = m => { const live = computeKpi(m, S.entries), snap = (S.kpiSnap || {})[m]; if (m !== curMonth() && snap && snap.length && !live.rows.some(r => r.total)) { return { month: m, bounds: periodBounds(m), rows: snap.slice().sort((a, b2) => (b2.enough - a.enough) || ((b2.score ?? -1) - (a.score ?? -1))), saved: true }; } return live; };
+    const fromSnap = m => { const live = computeKpi(m, S.entries), snap = ((S.kpiSnap || {})[m] || []).map(r => ({ ...r, name: currentName(r.name) })); if (m !== curMonth() && snap && snap.length && !live.rows.some(r => r.total)) { return { month: m, bounds: periodBounds(m), rows: snap.slice().sort((a, b2) => (b2.enough - a.enough) || ((b2.score ?? -1) - (a.score ?? -1))), saved: true }; } return live; };
     const res = fromSnap(S.kpiMonth), prev = fromSnap(prevMonth(S.kpiMonth));
     const trendMonths = []; { let m = S.kpiMonth; for (let i = 0; i < 6; i++) { trendMonths.unshift(m); m = prevMonth(m); } }
     const trend = {}; trendMonths.forEach(m => fromSnap(m).rows.forEach(r => { (trend[r.name] = trend[r.name] || {})[m] = r.score; }));
@@ -1116,11 +1116,20 @@ async function removeEdit(rootId, i) {
 $("#erList").addEventListener("change", e => { const s2 = e.target.closest("[data-er-set]"); if (s2) changeEdit(s2.dataset.erSet, +s2.dataset.i, s2.value); });
 $("#erList").addEventListener("click", e => { const t = e.target.closest("[data-er-del]"); if (t) { const id = t.dataset.erDel, i = +t.dataset.i; confirmIn(t.parentElement, "Remove this round and its fix task?", () => removeEdit(id, i)); } });
 
+/* ---------- editors renamed in SS Tracker (config/credentials.renamed = { old: new }) ---------- */
+function currentName(n) { const r = S.renamed || {}; let x = n, hops = 0; while (x && r[x] && hops++ < 10) x = r[x]; return x; }
+function oldNamesOf(n) { const r = S.renamed || {}; return Object.keys(r).filter(k => currentName(k) === n); }
+// a dashboard account linked to an old SS Tracker name is moved to the new name (leads only)
+function fixRenamedRoles() {
+  if (!S.isLead || !S.roles || !S.renamed) return;
+  S.roles.forEach(r => { const to = r.name && currentName(r.name); if (to && to !== r.name) updateDoc(doc(db, "dash_roles", r.id), { name: to }).catch(() => { }); });
+}
+
 /* ---------- who's free: editors with no open task (leads) ----------
    Open task = a plan item that isn't done or removed. Tasks on hold don't keep an editor busy.
    Roster = SS Tracker editors (config/credentials), plus anyone with tasks or takes. */
 function availability() {
-  const t = today(), now = Date.now(), lv = leaveMap(kpiCfg().leave), hol = new Set(dateList(kpiCfg().holidays));
+  const t = today(), now = Date.now(), lm = leaveMap(kpiCfg().leave), leaveOf = n => [n, ...oldNamesOf(n)].flatMap(x => lm[String(x).toLowerCase()] || []), hol = new Set(dateList(kpiCfg().holidays));
   const names = [...new Set([...(S.roster || []), ...(S.plans || []).map(p => p.editor), ...S.takes.map(x => x.editor)].filter(Boolean))].sort();
   return names.map(n => {
     const mine = (S.plans || []).filter(p => p.editor === n);
@@ -1132,7 +1141,7 @@ function availability() {
     const next = open.filter(p => p.deadline).sort((a, b) => (a.deadline + (a.deadlineTime || "99")).localeCompare(b.deadline + (b.deadlineTime || "99")))[0];
     const dueToday = open.filter(p => p.deadline && p.deadline <= t).length;
     const take0 = S.takes.find(x => x.editor === n);
-    const away = take0 ? "" : (lv[n.toLowerCase()] || []).includes(t) ? "On leave today" : hol.has(t) ? "Public holiday" : "";
+    const away = take0 ? "" : leaveOf(n).includes(t) ? "On leave today" : hol.has(t) ? "Public holiday" : "";
     let state = open.length ? (take ? "working" : "idle") : (take ? "untracked" : "free");
     return { name: n, state, open, held, take, lastDone, next, dueToday, away, freeFor: state === "free" && lastDone ? now - lastDone : null };
   });
@@ -1424,14 +1433,14 @@ onAuthStateChanged(auth, async user => {
   live(doc(db, "dash_settings", "deadlines"), snap => { S.dlMoves = snap.exists() ? (snap.data().moved || {}) : {}; applySheets(); });
   live(doc(db, "dash_settings", "extraSheets"), snap => { S.extraSheets = snap.exists() ? (snap.data().list || []) : []; watchExtraSheets(); applySheets(); });
   live(doc(db, "dash_settings", "links"), snap => { S.hiddenLinks = snap.exists() ? (snap.data().hidden || []) : []; renderLinks(); });
-  if (S.isLead) live(doc(db, "config", "credentials"), snap => { S.roster = snap.exists() ? Object.keys(snap.data().editors || {}).sort() : []; renderKpi(); renderAvailability(); });
+  if (S.isLead) live(doc(db, "config", "credentials"), snap => { S.roster = snap.exists() ? Object.keys(snap.data().editors || {}).sort() : []; S.renamed = snap.exists() ? (snap.data().renamed || {}) : {}; fixRenamedRoles(); renderKpi(); renderAvailability(); });
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
   live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); renderAvailability(); });
   if (S.isLead) {
     live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
-    live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); renderTeam(); });
+    live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); fixRenamedRoles(); renderTeam(); });
     live(collection(db, "plans"), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); renderKpi(); renderEditReview(); renderAvailability(); });
     live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); });
   } else if (S.myName) {
