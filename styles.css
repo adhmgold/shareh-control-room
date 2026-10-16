@@ -266,3 +266,4 @@ button.btn.danger-solid{background:var(--bad-fill);color:#fff}
 .kp-row{display:grid;grid-template-columns:1fr auto;gap:0 10px;align-items:baseline;border-top:1px solid var(--line);padding-top:4px}
 .kp-row .meta{grid-column:1/-1;font-size:11px}
 .kp-row b.ok{color:var(--ok)} .kp-row b.acc{color:var(--accent)} .kp-row b.warn{color:var(--warn)} .kp-row b.bad{color:var(--bad)}
+.raw-path{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;white-space:normal}
