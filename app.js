@@ -11,7 +11,8 @@ const OWNER_EMAILS = [...new Set([...(CFG.OWNER_EMAILS || []), ...(CFG.OWNER_EMA
 
 const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
-setPersistence(auth, browserLocalPersistence).catch(() => { }); // stay signed in after refresh or closing the browser
+// Firebase keeps the Google sign-in in the browser's storage by default, so it survives refreshes.
+// (An explicit setPersistence call here made the first auth check briefly report "signed out".)
 const db = getFirestore(app);
 
 const SHEETS = {
@@ -1404,6 +1405,10 @@ function stopAll() { unsubs.splice(0).forEach(u => { try { u(); } catch (e) { } 
 function live(ref, fn) { unsubs.push(onSnapshot(ref, fn, err => console.warn("listener", err.code))); }
 
 onAuthStateChanged(auth, async user => {
+  // wait until Firebase has finished restoring the saved sign-in, so a refresh never flashes the sign-in page
+  if (auth.authStateReady) { try { await auth.authStateReady(); } catch (e) { } }
+  if (user !== auth.currentUser) return;   // a newer auth state is already on its way
+  if (user && user.isAnonymous) user = null; // an old SS Tracker sign-in on the same website isn't a dashboard account
   stopAll();
   $("#loading").hidden = true;
   S.user = user;
