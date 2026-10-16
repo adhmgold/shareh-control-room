@@ -13,7 +13,24 @@ const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
 // Firebase keeps the Google sign-in in the browser's storage by default, so it survives refreshes.
 // (An explicit setPersistence call here made the first auth check briefly report "signed out".)
-const db = getFirestore(app);
+const dbGoogle = getFirestore(app);
+let db = dbGoogle;
+// SS Tracker's login (same website): when the Control Room is opened from SS Tracker, its signed-in
+// session is used instead of a Google account. SS Tracker uses the Firebase app named "sstracker".
+const trackerApp = initializeApp(FIREBASE_CONFIG, "sstracker");
+const trackerAuth = getAuth(trackerApp);
+const trackerDb = getFirestore(trackerApp);
+const EMBED = /[?&]embed=1/.test(location.search);
+if (EMBED) document.documentElement.classList.add("embedded");
+async function trackerLogin() {
+  try {
+    if (trackerAuth.authStateReady) await trackerAuth.authStateReady();
+    const u = trackerAuth.currentUser; if (!u) return null;
+    const snap = await getDoc(doc(trackerDb, "sessions", u.uid));
+    const s = snap.exists() ? snap.data() : null;
+    return s && (s.role === "manager" || s.role === "editor") && s.name ? s : null;
+  } catch (e) { return null; }
+}
 
 const SHEETS = {
   master: { id: "1djNmrvP5MBj5xRZPx_YE_WFEJ-lJAqd8czfa6_gr5bs", title: "Shareh.Ai Master tracker" },
@@ -1410,21 +1427,40 @@ onAuthStateChanged(auth, async user => {
   if (user !== auth.currentUser) return;   // a newer auth state is already on its way
   if (user && user.isAnonymous) user = null; // an old SS Tracker sign-in on the same website isn't a dashboard account
   stopAll();
-  $("#loading").hidden = true;
   S.user = user;
-  if (!user) { $("#app").hidden = true; $("#gate").hidden = false; $("#signInBtn").hidden = false; $("#gateOut").hidden = true; $("#gateMsg").textContent = "Sign in with your Google account to open the team dashboard."; return; }
-  S.email = (user.email || "").toLowerCase();
-  S.isOwner = OWNER_EMAILS.map(e => e.toLowerCase()).includes(S.email);
-  let roleDoc = null;
-  try { const snap = await getDoc(doc(db, "dash_roles", S.email)); roleDoc = snap.exists() ? snap.data() : null; } catch (e) { roleDoc = null; }
-  if (!S.isOwner && !roleDoc) {
-    $("#gateMsg").innerHTML = "<b>" + esc(S.email) + "</b> doesn't have access yet. Ask Gold to add you in the dashboard's Team tab.";
-    $("#signInBtn").hidden = true; $("#gateOut").hidden = false; return;
+  S.via = "google";
+  db = dbGoogle;
+  if (!user) {
+    // no Google account: use the SS Tracker login if there is one (opening the Control Room from SS Tracker)
+    const t = await trackerLogin();
+    if (t) {
+      db = trackerDb; S.via = "tracker";
+      S.email = t.name + " (SS Tracker)"; S.isOwner = false;
+      S.role = t.role === "manager" ? "lead" : "editor"; S.isLead = S.role === "lead"; S.myName = S.isLead ? null : t.name;
+      S.trackerName = t.name;
+    } else {
+      $("#loading").hidden = true;
+      $("#app").hidden = true; $("#gate").hidden = false; $("#signInBtn").hidden = false; $("#gateOut").hidden = true;
+      $("#gateMsg").innerHTML = "Sign in with your Google account, or open the Control Room from <b>SS Tracker</b> (Control Room button at the top) to use your SS Tracker login.";
+      return;
+    }
+  } else {
+    S.email = (user.email || "").toLowerCase();
+    S.isOwner = OWNER_EMAILS.map(e => e.toLowerCase()).includes(S.email);
+    let roleDoc = null;
+    try { const snap = await getDoc(doc(db, "dash_roles", S.email)); roleDoc = snap.exists() ? snap.data() : null; } catch (e) { roleDoc = null; }
+    if (!S.isOwner && !roleDoc) {
+      $("#loading").hidden = true;
+      $("#gateMsg").innerHTML = "<b>" + esc(S.email) + "</b> doesn't have access yet. Ask Gold to add you in the dashboard's Team tab.";
+      $("#app").hidden = true; $("#gate").hidden = false; $("#signInBtn").hidden = true; $("#gateOut").hidden = false; return;
+    }
+    S.role = S.isOwner ? "lead" : roleDoc.role;
+    S.isLead = S.role === "lead";
+    S.myName = roleDoc && roleDoc.name ? roleDoc.name : null;
   }
-  S.role = S.isOwner ? "lead" : roleDoc.role;
-  S.isLead = S.role === "lead";
-  S.myName = roleDoc && roleDoc.name ? roleDoc.name : (S.isOwner ? null : null);
-  $("#whoText").textContent = (S.myName || user.displayName || S.email) + (S.isLead ? " · lead" : "");
+  $("#loading").hidden = true;
+  $("#whoText").textContent = (S.via === "tracker" ? S.trackerName + " · via SS Tracker" : (S.myName || user.displayName || S.email)) + (S.isLead ? " · lead" : "");
+  $("#signOutBtn").hidden = S.via === "tracker";
   $("#teamTab").hidden = !S.isLead;
   $("#gate").hidden = true; $("#app").hidden = false;
   try { const t = localStorage.getItem("scr-tab"); if (t && document.getElementById("v-" + t) && (t !== "team" || S.isLead)) showTab(t); } catch (e) { }
