@@ -3,7 +3,7 @@
 // and sheet data that the Apps Script sync pushes into `dash_sheets`.
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { getFirestore, collection, doc, onSnapshot, query, where, setDoc, updateDoc, deleteDoc, addDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, query, where, setDoc, updateDoc, deleteDoc, addDoc, getDoc, getDocs } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import * as CFG from "./config.js";
 const { FIREBASE_CONFIG, SS_TRACKER_URL } = CFG;
 // Works with both the old (OWNER_EMAIL) and new (OWNER_EMAILS) config.js; both owners are always included.
@@ -13,13 +13,19 @@ const app = initializeApp(FIREBASE_CONFIG);
 const auth = getAuth(app);
 // Firebase keeps the Google sign-in in the browser's storage by default, so it survives refreshes.
 // (An explicit setPersistence call here made the first auth check briefly report "signed out".)
-const dbGoogle = getFirestore(app);
+/* Local cache: when the page is reloaded or reopened, Firestore reuses what it already has and only
+   reads documents that changed (much cheaper than reading everything again). */
+function cachedDb(a) {
+  try { return initializeFirestore(a, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) }); }
+  catch (e) { return getFirestore(a); }
+}
+const dbGoogle = cachedDb(app);
 let db = dbGoogle;
 // SS Tracker's login (same website): when the Control Room is opened from SS Tracker, its signed-in
 // session is used instead of a Google account. SS Tracker uses the Firebase app named "sstracker".
 const trackerApp = initializeApp(FIREBASE_CONFIG, "sstracker");
 const trackerAuth = getAuth(trackerApp);
-const trackerDb = getFirestore(trackerApp);
+const trackerDb = cachedDb(trackerApp);
 const EMBED = /[?&]embed=1/.test(location.search);
 if (EMBED) document.documentElement.classList.add("embedded");
 // Esc inside the embedded Control Room takes you back to SS Tracker (unless a dialog is open)
@@ -1145,6 +1151,38 @@ function fixRenamedRoles() {
   S.roles.forEach(r => { const to = r.name && currentName(r.name); if (to && to !== r.name) updateDoc(doc(db, "dash_roles", r.id), { name: to }).catch(() => { }); });
 }
 
+/* ---------- keeping reads low ----------
+   Live: takes and tasks from the start of the previous KPI period. Older months are fetched once,
+   only when a lead opens that month in the KPI tab, and kept for the rest of the visit. */
+function liveFrom() { return periodBounds(prevMonth(curMonth())).start; }
+function mergeEntries() {
+  const m = new Map();
+  [...Object.values(S.entriesOld || {}).flat(), ...(S.entriesLive || [])].forEach(e => m.set(e.id, e));
+  S.entries = [...m.values()];
+}
+function mergePlans() {
+  const m = new Map();
+  [...Object.values(S.plansOld || {}).flat(), ...Object.values(S.planParts || {}).flat()].forEach(p => m.set(p.id, p));
+  S.plans = [...m.values()];
+}
+async function loadOlderMonth(month) {
+  if (!S.isLead || !month || month >= prevMonth(curMonth())) return;
+  S.entriesOld = S.entriesOld || {}; S.plansOld = S.plansOld || {};
+  if (S.entriesOld[month]) return;
+  const b = periodBounds(month);
+  S.entriesOld[month] = [];
+  try {
+    const [es, ps, po] = await Promise.all([
+      getDocs(query(collection(db, "entries"), where("date", ">=", b.start), where("date", "<=", b.end))),
+      getDocs(query(collection(db, "plans"), where("dueDate", ">=", b.start), where("dueDate", "<=", b.end))),
+      getDocs(query(collection(db, "plans"), where("deadline", ">=", b.start), where("deadline", "<=", b.end)))
+    ]);
+    S.entriesOld[month] = es.docs.map(d => ({ id: d.id, ...d.data() }));
+    S.plansOld[month] = [...ps.docs, ...po.docs].map(d => normPlan(d.id, d.data()));
+    mergeEntries(); mergePlans(); renderKpi(); renderPauseReview(); renderEditReview();
+  } catch (e) { delete S.entriesOld[month]; console.warn("older month", e); }
+}
+
 /* ---------- who's free: editors with no open task (leads) ----------
    Open task = a plan item that isn't done or removed. Tasks on hold don't keep an editor busy.
    Roster = SS Tracker editors (config/credentials), plus anyone with tasks or takes. */
@@ -1216,7 +1254,7 @@ $("#calPrev").addEventListener("click", () => { S.calMonth = new Date(S.calMonth
 $("#calNext").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() + 1, 1); renderDeadlines(); });
 $("#teamPick").addEventListener("change", renderTeam);
 $("#v-team").addEventListener("click", e => { const r = e.target.closest("[data-plan-ed]"); if (r) { S.planEd = r.dataset.planEd; renderPlans(); } });
-$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); renderKpi(); renderPauseReview(); renderEditReview(); });
+$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); loadOlderMonth(S.kpiMonth); renderKpi(); renderPauseReview(); renderEditReview(); });
 $("#kpiBody").addEventListener("click", e => { const tr = e.target.closest("[data-kpi]"); if (tr) { S.kpiOpen = S.kpiOpen === tr.dataset.kpi ? null : tr.dataset.kpi; renderKpi(); if (S.kpiOpen) $("#kpiDetail").scrollIntoView({ behavior: "smooth", block: "start" }); } });
 $("#prStatus").addEventListener("click", e => { const b = e.target.closest("[data-pr]"); if (b) { S.prFilter.status = b.dataset.pr; renderPauseReview(); } });
 $("#prEditor").addEventListener("change", e => { S.prFilter.editor = e.target.value; renderPauseReview(); });
@@ -1487,9 +1525,14 @@ onAuthStateChanged(auth, async user => {
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
   live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); renderAvailability(); });
   if (S.isLead) {
-    live(collection(db, "entries"), s => { S.entries = s.docs.map(d => ({ id: d.id, ...d.data() })); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
+    // only the current and previous KPI periods are kept live; older months load once when opened in KPI
+    live(query(collection(db, "entries"), where("date", ">=", liveFrom())), s => { S.entriesLive = s.docs.map(d => ({ id: d.id, ...d.data() })); mergeEntries(); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); fixRenamedRoles(); renderTeam(); });
-    live(collection(db, "plans"), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); renderKpi(); renderEditReview(); renderAvailability(); });
+    // tasks: everything still open, plus anything due in the current or previous period
+    const onPlans = part => s => { S.planParts = S.planParts || {}; S.planParts[part] = s.docs.map(d => normPlan(d.id, d.data())); mergePlans(); renderPlans(); renderKpi(); renderEditReview(); renderAvailability(); };
+    live(query(collection(db, "plans"), where("status", "in", ["todo", "doing", "held"])), onPlans("open"));
+    live(query(collection(db, "plans"), where("dueDate", ">=", liveFrom())), onPlans("due"));
+    live(query(collection(db, "plans"), where("deadline", ">=", liveFrom())), onPlans("dueOld"));   // older task format
     live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
