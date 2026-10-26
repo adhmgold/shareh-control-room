@@ -551,7 +551,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderPlans(); renderAvailability(); renderResetBtn(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview(); renderPlans(); renderAvailability(); renderResetBtn(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -718,6 +718,7 @@ function leaveMap(text) {
   const m = {}; String(text || "").split(/\n/).forEach(line => { const i = line.indexOf(":"); if (i < 1) return; const n = line.slice(0, i).trim().toLowerCase(); m[n] = (m[n] || []).concat(dateList(line.slice(i + 1))); });
   return m;
 }
+const dayReviewKey = (name, date, type) => String(name).replace(/[\/]/g, "_") + "_" + date + "_" + type;
 function attendance(name, list, b, cfg) {
   const todayK = today(), hol = new Set(dateList(cfg.holidays)), lm = leaveMap(cfg.leave), lv = new Set([name, ...oldNamesOf(name)].flatMap(n => lm[String(n).toLowerCase()] || []));
   const workedDays = new Set(list.filter(e => entryHours(e) > 0 || e.date).map(e => e.date));
@@ -729,18 +730,34 @@ function attendance(name, list, b, cfg) {
     if (hol.has(k) || lv.has(k)) { off.push(k); continue; }
     work.push(k);
   }
-  const perDay = {}; list.forEach(e => { perDay[e.date] = (perDay[e.date] || 0) + entryHours(e); });
-  const daysWorked = work.filter(k => perDay[k] > 0);
-  const missed = work.filter(k => !(perDay[k] > 0));
-  const total = list.reduce((a, e) => a + entryHours(e), 0);
+  const perDay = {}, where = {};
+  list.forEach(e => { perDay[e.date] = (perDay[e.date] || 0) + entryHours(e); if (e.location) (where[e.date] = where[e.date] || {})[e.location] = 1; });
   const dayH = Math.max(1, +cfg.dayHours || 7);
-  const short = daysWorked.filter(k => perDay[k] < dayH).map(k => ({ day: k, h: perDay[k] }));
+  const rv = S.dayReviews || {}, dec = (k, type) => { const r = rv[dayReviewKey(name, k, type)]; return r ? r.decision : null; };
+  // a missed workday you approved is treated like a day off; a short day you approved counts as a full day
+  const rawMissed = work.filter(k => !(perDay[k] > 0));
+  const approvedOff = rawMissed.filter(k => dec(k, "missed") === "accept");
+  const workCounted = work.filter(k => !approvedOff.includes(k));
+  const daysWorked = workCounted.filter(k => perDay[k] > 0);
+  const missed = rawMissed.filter(k => !approvedOff.includes(k));
+  const rawShort = daysWorked.filter(k => perDay[k] < dayH);
+  const topUp = rawShort.filter(k => dec(k, "short") === "accept").reduce((a, k) => a + (dayH - perDay[k]), 0);
+  const total = list.reduce((a, e) => a + entryHours(e), 0);
+  const short = rawShort.filter(k => dec(k, "short") !== "accept").map(k => ({ day: k, h: perDay[k] }));
   const extraDays = Object.keys(perDay).filter(k => perDay[k] > 0 && !work.includes(k));   // Fridays, holidays, leave
+  const loc = k => Object.keys(where[k] || {}).join("+");
+  const review = [
+    ...rawMissed.map(k => ({ date: k, type: "missed", h: 0, decision: dec(k, "missed"), where: "" })),
+    ...rawShort.map(k => ({ date: k, type: "short", h: perDay[k], decision: dec(k, "short"), where: loc(k) }))
+  ];
+  const locDays = { office: 0, home: 0 };
+  Object.keys(where).forEach(k => { if (where[k].office) locDays.office++; if (where[k].home) locDays.home++; });
   return {
-    workdays: work.length, daysWorked: daysWorked.length, missedDays: missed, offDays: off, shortDays: short, extraDays, totalHours: total, dayH,
+    workdays: workCounted.length, daysWorked: daysWorked.length, missedDays: missed, offDays: off, approvedOff, shortDays: short, approvedShort: rawShort.length - short.length,
+    extraDays, totalHours: total, topUp, dayH, review, locDays,
     avgPerDay: daysWorked.length ? total / daysWorked.length : 0,
-    attendPct: work.length ? 100 * daysWorked.length / work.length : null,
-    hoursPct: work.length ? (daysWorked.length ? Math.min(100, 100 * total / (daysWorked.length * dayH)) : 0) : null
+    attendPct: workCounted.length ? 100 * daysWorked.length / workCounted.length : null,
+    hoursPct: workCounted.length ? (daysWorked.length ? Math.min(100, 100 * (total + topUp) / (daysWorked.length * dayH)) : 0) : null
   };
 }
 function blendKpi(parts, cfg) {
@@ -798,7 +815,7 @@ function computeKpi(month, entries) {
       name, tasks: mine, total: mine.length, counted: counted.length, onTime,
       late: counted.filter(t => t.res === "late").length, missed: counted.filter(t => t.res === "missed").length, pending: mine.filter(t => t.res === "pending").length,
       avg, penalty, score: blended == null ? null : Math.max(0, blended - penalty), enough: blended != null,
-      attendPct: att.attendPct, hoursPct: att.hoursPct, workdays: att.workdays, daysWorked: att.daysWorked, missedDays: att.missedDays, offDays: att.offDays, shortDays: att.shortDays, extraDays: att.extraDays, avgPerDay: att.avgPerDay, dayH: att.dayH,
+      attendPct: att.attendPct, hoursPct: att.hoursPct, workdays: att.workdays, daysWorked: att.daysWorked, missedDays: att.missedDays, offDays: att.offDays, approvedOff: att.approvedOff, approvedShort: att.approvedShort, shortDays: att.shortDays, extraDays: att.extraDays, attReview: att.review, locDays: att.locDays, topUp: att.topUp, avgPerDay: att.avgPerDay, dayH: att.dayH,
       weights: { tasks: +cfg.wTasks || 0, attend: +cfg.wAttend || 0, hours: +cfg.wHours || 0 },
       editsFault, editsOther, firstPassOk, firstPassOf: originals.length, firstPass: originals.length ? 100 * firstPassOk / originals.length : null,
       takes: list.length, hours: list.reduce((a, e) => a + entryHours(e), 0), videos: new Set(list.map(e => compact(e.video))).size,
@@ -838,6 +855,9 @@ function kpiCard(r, prev) {
     fact("Days missed", r.missedDays ? (r.missedDays.length ? "<span class=\"pill bad\">" + r.missedDays.length + "</span> " + r.missedDays.map(fmtDay).join(", ") : "0") : "—") +
     fact("Days under " + (r.dayH || 7) + " h", r.shortDays ? (r.shortDays.length ? r.shortDays.length + " <span class=\"meta\">" + r.shortDays.slice(0, 10).map(x => fmtDay(x.day) + " " + fmtH(x.h)).join(" · ") + (r.shortDays.length > 10 ? " …" : "") + "</span>" : "0") : "—") +
     (r.offDays && r.offDays.length ? fact("Holidays / leave", r.offDays.map(fmtDay).join(", ")) : "") +
+    (r.approvedOff && r.approvedOff.length ? fact("Missed days approved", r.approvedOff.map(fmtDay).join(", ")) : "") +
+    (r.approvedShort ? fact("Short days approved", r.approvedShort + " <span class=\"meta\">(counted as full days)</span>") : "") +
+    (r.locDays && (r.locDays.office || r.locDays.home) ? fact("Worked from", "🏢 office " + r.locDays.office + " day" + (r.locDays.office === 1 ? "" : "s") + " · 🏠 home " + r.locDays.home + " day" + (r.locDays.home === 1 ? "" : "s")) : "") +
     fact("Pauses", r.countedPauses + " not excused (" + Math.round(r.countedMin) + " min) · " + r.excusedPauses + " excused") + fact("Holds", r.countedHolds + " not excused · " + r.excusedHolds + " excused") + "</div></div>";
 }
 function kpiDetail(r) {
@@ -878,6 +898,7 @@ function renderKpi() {
     fact("Reviewed by a lead", "A lead can set any task's KPI by hand (Review button). That number replaces the automatic one for that task, with no late-day deductions. Moving a task's deadline rescores it against the new date.") +
     fact("The period's KPI", "Tasks on time " + kpiCfg().wTasks + "% + Attendance " + kpiCfg().wAttend + "% + Hours " + kpiCfg().wHours + "%, minus late-day deductions (never below 0%). With no tasks due yet, it comes from Attendance and Hours only.") +
     fact("Tasks on time", "Average of all task scores in the period, after edit deductions and lead reviews.") +
+    fact("Attendance review", "Missed workdays and short days are listed in Attendance review. Approve a missed day and it counts like a day off; approve a short day (finished early) and it counts as a full day. Rejected or not-yet-reviewed days count as they are.") +
     fact("Attendance", "Days worked ÷ workdays. Workdays are every day except Friday, public holidays and the editor's leave days (KPI settings). In the current period, days up to today count.") +
     fact("Hours", "All hours logged in SS Tracker (take time minus pauses; time on hold isn't counted) ÷ (days worked × " + kpiCfg().dayHours + " h). Overtime and Friday work count and can make up for short days, up to 100%.") +
     fact("Period", "From the 25th of one month to the 24th of the next. Tasks belong to the period their deadline falls in.") +
@@ -1151,6 +1172,51 @@ function fixRenamedRoles() {
   S.roles.forEach(r => { const to = r.name && currentName(r.name); if (to && to !== r.name) updateDoc(doc(db, "dash_roles", r.id), { name: to }).catch(() => { }); });
 }
 
+/* ---------- attendance review (leads): approve or reject missed days and short days ---------- */
+S.drFilter = { status: "pending", editor: "", type: "" };
+function allDayItems() {
+  const res = computeKpi(S.kpiMonth || curMonth(), S.entries || []);
+  const out = [];
+  res.rows.forEach(r => (r.attReview || []).forEach(d => out.push({ ...d, editor: r.name, key: dayReviewKey(r.name, d.date, d.type), dayH: r.dayH })));
+  return out.sort((a, b) => b.date.localeCompare(a.date) || a.editor.localeCompare(b.editor));
+}
+function renderDayReview() {
+  const panel = $("#dayReview"); if (!panel) return;
+  if (!S.isLead) { panel.hidden = true; return; } panel.hidden = false;
+  const all = allDayItems(), f = S.drFilter;
+  const cnt = st => all.filter(d => (!f.type || d.type === f.type) && (st === "all" ? true : st === "pending" ? !d.decision : d.decision === st)).length;
+  $("#drStatus").innerHTML = [["pending", "To review"], ["accept", "Approved"], ["reject", "Rejected"], ["all", "All"]].map(([k, l]) => "<button type=\"button\" data-dr=\"" + k + "\" aria-pressed=\"" + (f.status === k) + "\">" + l + " <b>" + cnt(k) + "</b></button>").join("");
+  const eds = [...new Set(all.map(d => d.editor))].sort();
+  const pick = $("#drEditor"); pick.innerHTML = "<option value=\"\">All editors</option>" + eds.map(n => "<option>" + esc(n) + "</option>").join(""); pick.value = eds.includes(f.editor) ? f.editor : "";
+  $("#drType").value = f.type;
+  const rows = all.filter(d => (!f.editor || d.editor === f.editor) && (!f.type || d.type === f.type) && (f.status === "all" || (f.status === "pending" ? !d.decision : d.decision === f.status)));
+  S.drShown = rows.map(d => d.key);
+  $("#drBulk").hidden = !rows.length || f.status === "accept";
+  const LOC = { office: "🏢 office", home: "🏠 home", "office+home": "🏢+🏠", "home+office": "🏢+🏠" };
+  $("#drList").innerHTML = rows.length ? "<div class=\"tscroll\"><table><thead><tr><th>Day</th><th>Editor</th><th>What</th><th>Worked from</th><th>Status</th><th></th></tr></thead><tbody>" + rows.slice(0, 400).map(d =>
+    "<tr><td class=\"code\">" + ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parseYmd(d.date).getDay()] + " " + fmtDay(d.date) + "</td><td>" + esc(d.editor) + "</td><td>" +
+    (d.type === "missed" ? "<span class=\"pill bad\">Missed day</span> <span class=\"meta\">no work logged</span>" : "<span class=\"pill warn\">Short day</span> <span class=\"meta\">" + fmtH(d.h) + " of " + d.dayH + " h</span>") + "</td><td>" + (LOC[d.where] || (d.type === "missed" ? "—" : "<span class=\"meta\">not set</span>")) + "</td><td>" +
+    (d.decision === "accept" ? "<span class=\"pill ok\">Approved</span>" : d.decision === "reject" ? "<span class=\"pill bad\">Rejected</span>" : "<span class=\"pill\">Not reviewed · counts for now</span>") + "</td>" +
+    "<td class=\"pr-actions\"><button class=\"btn small ok\" type=\"button\" data-dr-set=\"accept\" data-key=\"" + esc(d.key) + "\" data-ed=\"" + esc(d.editor) + "\" data-date=\"" + d.date + "\" data-type=\"" + d.type + "\"" + (d.decision === "accept" ? " disabled" : "") + ">Approve</button><button class=\"btn small no\" type=\"button\" data-dr-set=\"reject\" data-key=\"" + esc(d.key) + "\" data-ed=\"" + esc(d.editor) + "\" data-date=\"" + d.date + "\" data-type=\"" + d.type + "\"" + (d.decision === "reject" ? " disabled" : "") + ">Reject</button>" + (d.decision ? "<button class=\"link\" type=\"button\" data-dr-set=\"clear\" data-key=\"" + esc(d.key) + "\">Undo</button>" : "") + "</td></tr>").join("") + "</tbody></table></div>" + (rows.length > 400 ? "<p class=\"meta\">Showing the first 400.</p>" : "")
+    : "<p class=\"empty\">" + (f.status === "pending" ? "Nothing left to review for " + esc(monthLabel(S.kpiMonth || curMonth())) + "." : "Nothing matches.") + "</p>";
+}
+function setDayDecision(key, decision, editor, date, type) {
+  if (decision === "clear") return deleteDoc(doc(db, "dash_day_reviews", key)).catch(() => { });
+  return setDoc(doc(db, "dash_day_reviews", key), { editor, date, type, decision, by: S.email, at: Date.now() }).catch(() => { });
+}
+$("#drStatus").addEventListener("click", e => { const b = e.target.closest("[data-dr]"); if (b) { S.drFilter.status = b.dataset.dr; renderDayReview(); } });
+$("#drEditor").addEventListener("change", e => { S.drFilter.editor = e.target.value; renderDayReview(); });
+$("#drType").addEventListener("change", e => { S.drFilter.type = e.target.value; renderDayReview(); });
+$("#drList").addEventListener("click", e => { const b = e.target.closest("[data-dr-set]"); if (b) { b.disabled = true; setDayDecision(b.dataset.key, b.dataset.drSet, b.dataset.ed, b.dataset.date, b.dataset.type); } });
+$("#drBulk").addEventListener("click", async e => {
+  const b = e.target.closest("[data-dr-bulk]"); if (!b) return;
+  const dec = b.dataset.drBulk, items = allDayItems().filter(d => (S.drShown || []).includes(d.key));
+  if (!items.length) return;
+  b.disabled = true; b.textContent = "Saving " + items.length + "…";
+  for (const d of items) await setDayDecision(d.key, dec, d.editor, d.date, d.type);
+  b.disabled = false; b.textContent = dec === "accept" ? "Approve all shown" : "Reject all shown"; renderDayReview();
+});
+
 /* ---------- keeping reads low ----------
    Live: takes and tasks from the start of the previous KPI period. Older months are fetched once,
    only when a lead opens that month in the KPI tab, and kept for the rest of the visit. */
@@ -1179,7 +1245,7 @@ async function loadOlderMonth(month) {
     ]);
     S.entriesOld[month] = es.docs.map(d => ({ id: d.id, ...d.data() }));
     S.plansOld[month] = [...ps.docs, ...po.docs].map(d => normPlan(d.id, d.data()));
-    mergeEntries(); mergePlans(); renderKpi(); renderPauseReview(); renderEditReview();
+    mergeEntries(); mergePlans(); renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview();
   } catch (e) { delete S.entriesOld[month]; console.warn("older month", e); }
 }
 
@@ -1219,7 +1285,7 @@ function renderAvailability() {
     idle: "<span class=\"pill acc\">Has tasks · not working now</span>",
     working: "<span class=\"pill ok\">Working now</span>" }[r.state];
   const detail = r => {
-    if (r.state === "working") return "On <span class=\"code\">" + esc(r.take.video) + "</span> " + esc(r.take.stage || "") + (r.take.pausedAt ? " <span class=\"pill warn\">paused</span>" : "") + " · " + r.open.length + " open task" + (r.open.length > 1 ? "s" : "");
+    if (r.state === "working") return (r.take.location === "home" ? "🏠 " : r.take.location === "office" ? "🏢 " : "") + "On <span class=\"code\">" + esc(r.take.video) + "</span> " + esc(r.take.stage || "") + (r.take.pausedAt ? " <span class=\"pill warn\">paused</span>" : "") + " · " + r.open.length + " open task" + (r.open.length > 1 ? "s" : "");
     if (r.state === "untracked") return "Timer on <span class=\"code\">" + esc(r.take.video) + "</span>, but nothing in his plan";
     if (r.state === "idle") return r.open.length + " open task" + (r.open.length > 1 ? "s" : "") + (r.dueToday ? " · <b>" + r.dueToday + " due today or overdue</b>" : "") + (r.next ? " · next: <span class=\"code\">" + esc(r.next.video) + "</span> due " + fmtDay(r.next.deadline) + (r.next.deadlineTime ? " " + esc(r.next.deadlineTime) : "") : "");
     return (r.lastDone ? "Last task finished " + avAgo(Date.now() - r.lastDone) + " ago" : "No tasks yet") + (r.held.length ? " · " + r.held.length + " on hold" : "");
@@ -1254,7 +1320,7 @@ $("#calPrev").addEventListener("click", () => { S.calMonth = new Date(S.calMonth
 $("#calNext").addEventListener("click", () => { S.calMonth = new Date(S.calMonth.getFullYear(), S.calMonth.getMonth() + 1, 1); renderDeadlines(); });
 $("#teamPick").addEventListener("change", renderTeam);
 $("#v-team").addEventListener("click", e => { const r = e.target.closest("[data-plan-ed]"); if (r) { S.planEd = r.dataset.planEd; renderPlans(); } });
-$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); loadOlderMonth(S.kpiMonth); renderKpi(); renderPauseReview(); renderEditReview(); });
+$("#kpiMonth").addEventListener("change", e => { S.kpiMonth = e.target.value; S.kpiOpen = null; subscribeMyKpi(); loadOlderMonth(S.kpiMonth); renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview(); });
 $("#kpiBody").addEventListener("click", e => { const tr = e.target.closest("[data-kpi]"); if (tr) { S.kpiOpen = S.kpiOpen === tr.dataset.kpi ? null : tr.dataset.kpi; renderKpi(); if (S.kpiOpen) $("#kpiDetail").scrollIntoView({ behavior: "smooth", block: "start" }); } });
 $("#prStatus").addEventListener("click", e => { const b = e.target.closest("[data-pr]"); if (b) { S.prFilter.status = b.dataset.pr; renderPauseReview(); } });
 $("#prEditor").addEventListener("change", e => { S.prFilter.editor = e.target.value; renderPauseReview(); });
@@ -1526,14 +1592,15 @@ onAuthStateChanged(auth, async user => {
   live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); renderAvailability(); });
   if (S.isLead) {
     // only the current and previous KPI periods are kept live; older months load once when opened in KPI
-    live(query(collection(db, "entries"), where("date", ">=", liveFrom())), s => { S.entriesLive = s.docs.map(d => ({ id: d.id, ...d.data() })); mergeEntries(); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); });
+    live(query(collection(db, "entries"), where("date", ">=", liveFrom())), s => { S.entriesLive = s.docs.map(d => ({ id: d.id, ...d.data() })); mergeEntries(); renderMyWork(); renderTeam(); renderProjects(); renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview(); });
     live(collection(db, "dash_roles"), s => { S.roles = s.docs.map(d => ({ id: d.id, ...d.data() })); fixRenamedRoles(); renderTeam(); });
     // tasks: everything still open, plus anything due in the current or previous period
     const onPlans = part => s => { S.planParts = S.planParts || {}; S.planParts[part] = s.docs.map(d => normPlan(d.id, d.data())); mergePlans(); renderPlans(); renderKpi(); renderEditReview(); renderAvailability(); };
     live(query(collection(db, "plans"), where("status", "in", ["todo", "doing", "held"])), onPlans("open"));
     live(query(collection(db, "plans"), where("dueDate", ">=", liveFrom())), onPlans("due"));
     live(query(collection(db, "plans"), where("deadline", ">=", liveFrom())), onPlans("dueOld"));   // older task format
-    live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); });
+    live(collection(db, "dash_day_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.dayReviews = m; renderKpi(); renderDayReview(); });
+    live(collection(db, "dash_pause_reviews"), s => { const m = {}; s.docs.forEach(d => { m[d.id] = d.data(); }); S.pauseReviews = m; renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview(); });
   } else if (S.myName) {
     live(query(collection(db, "entries"), where("editor", "==", S.myName)), s => { S.entries = s.docs.map(d => d.data()); renderMyWork(); });
     live(query(collection(db, "plans"), where("editor", "==", S.myName)), s => { S.plans = s.docs.map(d => normPlan(d.id, d.data())); renderPlans(); });

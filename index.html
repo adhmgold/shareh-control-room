@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="icon" type="image/png" href="favicon.png">
 <meta name="theme-color" content="#332FD1">
-<link rel="stylesheet" href="styles.css?v=16">
+<link rel="stylesheet" href="styles.css?v=17">
 <style>html,body{margin:0}</style>
 </head>
 <body>
@@ -159,6 +159,12 @@
         <div class="inline-row"><label class="f" style="max-width:240px">Editor<select id="prEditor"></select></label>
           <div id="prBulk" hidden><button class="btn ghost" type="button" data-bulk="accept-suggested">Accept all suggested (render, review, meeting, prayer)</button> <button class="btn ghost" type="button" data-bulk="reject-rest">Reject the rest</button></div></div>
         <div id="prList"></div></div>
+      <div class="panel span12" id="dayReview" hidden><h2>Attendance review <span class="aside">missed workdays and days under the daily hours · approved days don't count against the editor</span></h2>
+        <div class="chips" id="drStatus"></div>
+        <div class="inline-row"><label class="f" style="max-width:240px">Editor<select id="drEditor"></select></label>
+          <label class="f" style="max-width:200px">Type<select id="drType"><option value="">Missed days and short days</option><option value="missed">Missed days only</option><option value="short">Short days only</option></select></label>
+          <div id="drBulk" hidden><button class="btn ghost" type="button" data-dr-bulk="accept">Approve all shown</button> <button class="btn ghost" type="button" data-dr-bulk="reject">Reject all shown</button></div></div>
+        <div id="drList"></div></div>
       <div class="panel span12" id="editReview" hidden><h2>Edit rounds <span class="aside">videos sent back for edits · change whose fault it was or remove a round</span></h2><div id="erList"></div></div>
       <div class="panel span12" id="kpiHow"></div>
       <div class="panel span12" id="kpiSettingsPanel" hidden><h2>KPI settings <span class="aside">leads only</span></h2>
@@ -206,7 +212,7 @@
 </main>
 </div>
 
-<script type="module" src="app.js?v=16"></script>
+<script type="module" src="app.js?v=17"></script>
 <div id="editDlg" class="modal" hidden></div>
 </body>
 </html>
