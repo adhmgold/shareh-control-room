@@ -324,3 +324,10 @@ a.vlink{text-decoration:none;cursor:pointer}
 .sh-bar{height:14px;border-radius:99px;background:var(--sunk);border:2px solid var(--ink);overflow:hidden}
 .sh-bar span{display:block;height:100%;background:linear-gradient(90deg,var(--ok-fill),var(--accent))}
 .sh-bar.small{height:10px;border-width:1px}
+/* arrange tabs */
+.arr-bar{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:-4px 0 10px}
+.panel.arranging{position:relative;outline:2px dashed var(--accent);outline-offset:3px}
+.arr-ctl{position:absolute;top:8px;right:8px;display:flex;gap:4px;z-index:5}
+.arr-ctl button{width:30px;height:30px;border-radius:8px;border:2px solid var(--ink);background:var(--yellow,#FFC700);font-weight:800;cursor:pointer}
+.arr-ctl button:hover{background:var(--accent);color:#fff}
+.panel.arranging > h2{padding-right:118px}
