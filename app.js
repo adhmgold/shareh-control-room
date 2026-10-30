@@ -1836,7 +1836,7 @@ document.addEventListener("submit", async e => {
    videos divided into parts ("V15-Pt 1 AR": each part counts), and the Shooting Log sheet (dates → shoots per day).
    Settings in dash_settings/shooting: { target: videos per day, deadlines: { "G05|8": "2026-11-10" } }. */
 const SHOOT_DEFAULT_TARGET = 8;
-function shootCfg() { const c = S.shootSettings || {}; return { target: c.target != null && c.target !== "" ? +c.target : SHOOT_DEFAULT_TARGET, deadlines: c.deadlines || {} }; }
+function shootCfg() { const c = S.shootSettings || {}; return { target: c.target != null && c.target !== "" ? +c.target : SHOOT_DEFAULT_TARGET, deadlines: c.deadlines || {}, planned: c.planned || {} }; }
 const gradeKey = g => { const m = /(\d+)/.exec(String(g || "")); return m ? "G" + pad(+m[1]) : String(g || "").trim().toUpperCase(); };
 const isWorkday = d => { const x = parseYmd(d); return x && x.getDay() !== 5 && !dateList(kpiCfg().holidays).includes(d); };
 function addDays(d, n) { const x = parseYmd(d); x.setDate(x.getDate() + n); return ymd(x); }
@@ -1896,9 +1896,23 @@ function shootLog(items) {
 function renderShooting() {
   const box = $("#shootBody"); if (!box) return;
   const items = shootItems();
-  if (!items.length) { box.innerHTML = "<div class=\"panel span12\"><p class=\"empty\">No plan tab with a \"Shooting\" column yet. It reads the Main Production Plan from the Master tracker.</p></div>"; return; }
+  if (!items.length && !Object.keys(shootCfg().planned).length) { box.innerHTML = "<div class=\"panel span12\"><p class=\"empty\">No plan tab with a \"Shooting\" column yet. It reads the Main Production Plan from the Master tracker.</p></div>"; return; }
   const cfg = shootCfg(), t = today(), log = shootLog(items);
-  const live = items.filter(x => !x.cancelled), shot = live.filter(x => x.shot), notShot = live.filter(x => !x.shot), cancelled = items.filter(x => x.cancelled), parts = items.filter(x => x.part);
+  const live = items.filter(x => !x.cancelled), shot = live.filter(x => x.shot), cancelled = items.filter(x => x.cancelled), parts = items.filter(x => x.part);
+  // per unit: how many videos it has (set here), what the plan shows as shot; not shot = videos − cancelled − shot
+  const groups = {}; items.forEach(x => { const k = x.g + "|" + x.u; (groups[k] = groups[k] || { g: x.g, u: x.u, all: [] }).all.push(x); });
+  Object.keys(cfg.planned).forEach(k => { if (!groups[k]) { const [g, u] = k.split("|"); groups[k] = { g, u, all: [] }; } });
+  const gl = Object.values(groups).sort((a, b) => a.g.localeCompare(b.g) || (+a.u - +b.u));
+  gl.forEach(G => {
+    const pl = cfg.planned[G.g + "|" + G.u];
+    G.planned = pl != null && pl !== "" ? +pl : null;
+    G.lv = G.all.filter(x => !x.cancelled); G.sh = G.lv.filter(x => x.shot).length; G.can = G.all.length - G.lv.length; G.pt = G.all.filter(x => x.part).length;
+    G.total = G.planned != null ? Math.max(0, G.planned - G.can) : G.lv.length;
+    G.left = Math.max(0, G.total - G.sh);
+    G.missing = Math.max(0, G.total - G.lv.length);   // videos the plan has no row for yet
+  });
+  const totAll = gl.reduce((a, G) => a + G.total, 0), totShot = gl.reduce((a, G) => a + G.sh, 0), totLeft = gl.reduce((a, G) => a + G.left, 0);
+  const notShot = live.filter(x => !x.shot).concat(gl.filter(G => G.missing).map(G => ({ g: G.g, u: G.u, video: G.missing + " more video" + (G.missing > 1 ? "s" : "") + " (not in the plan yet)", missing: true })));
   // per day from the log
   const perDay = {}; (log ? log.rows : []).forEach(r => { if (r.date && r.ok) perDay[r.date] = (perDay[r.date] || 0) + r.n; });
   const days = []; for (let d = addDays(t, -29); d <= t; d = addDays(d, 1)) days.push(d);
@@ -1909,11 +1923,11 @@ function renderShooting() {
   const weekStart = (() => { let d = t; while (parseYmd(d).getDay() !== 6) d = addDays(d, -1); return d; })();   // week starts Saturday
   const weekShot = days.filter(d => d >= weekStart).reduce((a, d) => a + (perDay[d] || 0), 0), weekTarget = workdaysBetween(weekStart, t) * cfg.target;
   const todayN = perDay[t] || 0, under = wd.filter(d => d < t && (perDay[d] || 0) < cfg.target).length;
-  const pctDone = live.length ? Math.round(100 * shot.length / live.length) : 0;
-  const daysLeft = avg > 0 ? Math.ceil(notShot.length / avg) : null;
+  const pctDone = totAll ? Math.round(100 * totShot / totAll) : 0;
+  const daysLeft = avg > 0 ? Math.ceil(totLeft / avg) : null;
   const tile = (n, l, cls, sub) => "<div class=\"sh-tile " + (cls || "") + "\"><b>" + n + "</b><span>" + l + "</span>" + (sub ? "<em>" + sub + "</em>" : "") + "</div>";
-  let html = "<div class=\"panel span12\"><h2>Shooting <span class=\"aside\">" + pctDone + "% shot · " + shot.length + " of " + live.length + " videos</span></h2><div class=\"sh-tiles\">" +
-    tile(shot.length, "Shot", "ok") + tile(notShot.length, "Not shot", notShot.length ? "warn" : "ok") + tile(cancelled.length, "Cancelled", "") + tile(parts.length, "Parts", "", "videos divided into parts; each part counts") +
+  let html = "<div class=\"panel span12\"><h2>Shooting <span class=\"aside\">" + pctDone + "% shot · " + totShot + " of " + totAll + " videos</span></h2><div class=\"sh-tiles\">" +
+    tile(totShot, "Shot", "ok") + tile(totLeft, "Not shot", totLeft ? "warn" : "ok") + tile(cancelled.length, "Cancelled", "") + tile(parts.length, "Parts", "", "videos divided into parts; each part counts") +
     tile(todayN + " / " + cfg.target, "Shot today", todayN >= cfg.target ? "ok" : isWorkday(t) ? "bad" : "", isWorkday(t) ? "" : "day off") +
     tile(weekShot + " / " + weekTarget, "This week", weekShot >= weekTarget ? "ok" : "warn", "since Saturday") +
     tile(avg.toFixed(1), "Average per workday", avg >= cfg.target ? "ok" : "warn", "last 14 workdays") +
@@ -1935,33 +1949,33 @@ function renderShooting() {
     html += "<div class=\"panel span12\"><h2>Shot per day</h2><p class=\"meta\">Link the Shooting Log to count shoots per day: copy its link, then in <b>Links › Add link</b> paste it and tick <b>Read this sheet</b> (or paste it here).</p>" +
       (S.realLead ? "<form id=\"shLogForm\" class=\"inline-row\"><input id=\"shLogUrl\" placeholder=\"https://docs.google.com/spreadsheets/d/…\" style=\"flex:1;min-width:260px\"><button class=\"btn\" type=\"submit\">Link Shooting Log</button><span class=\"meta\" id=\"shLogMsg\"></span></form>" : "") + "</div>";
   }
-  // per grade / unit with deadlines
-  const groups = {}; items.forEach(x => { const k = x.g + "|" + x.u; (groups[k] = groups[k] || { g: x.g, u: x.u, all: [] }).all.push(x); });
-  const gl = Object.values(groups).sort((a, b) => a.g.localeCompare(b.g) || (+a.u - +b.u));
   const rowsHtml = gl.map(G => {
-    const lv = G.all.filter(x => !x.cancelled), sh = lv.filter(x => x.shot).length, left = lv.length - sh, can = G.all.length - lv.length, pt = G.all.filter(x => x.part).length;
-    const dl = cfg.deadlines[G.g + "|" + G.u] || "", pct = lv.length ? Math.round(100 * sh / lv.length) : 100;
+    const sh = G.sh, left = G.left, can = G.can, pt = G.pt;
+    const dl = cfg.deadlines[G.g + "|" + G.u] || "", pct = G.total ? Math.round(100 * sh / G.total) : 100;
     let st = "<span class=\"meta\">no deadline</span>";
-    if (!left) st = "<span class=\"pill ok\">All shot</span>";
+    if (G.planned == null && S.realLead) st = "<span class=\"meta\">type how many videos this unit has</span>";
+    else if (!left) st = "<span class=\"pill ok\">All shot</span>";
     else if (dl) { const n = daysBetween(t, dl), w = workdaysBetween(t, dl);
       st = n < 0 ? "<span class=\"pill bad\">" + (-n) + " day" + (n === -1 ? "" : "s") + " late · " + left + " left</span>"
         : "<span class=\"pill " + (left / Math.max(w, 1) > cfg.target ? "bad" : n <= 3 ? "warn" : "acc") + "\">" + (n === 0 ? "due today" : "due in " + n + " day" + (n === 1 ? "" : "s")) + " · needs " + Math.ceil(left / Math.max(w, 1)) + "/day</span>"; }
-    return "<tr><td><b>" + esc(G.g) + "</b> · Unit " + esc(G.u) + "</td><td class=\"n\">" + lv.length + "</td><td class=\"n\">" + sh + "</td><td class=\"n\">" + (left ? "<b>" + left + "</b>" : "·") + "</td><td class=\"n\">" + (can || "·") + "</td><td class=\"n\">" + (pt || "·") + "</td>" +
+    return "<tr><td><b>" + esc(G.g) + "</b> · Unit " + esc(G.u) + "</td><td class=\"n\">" + (S.realLead ? "<input type=\"number\" min=\"0\" max=\"999\" data-sh-pl=\"" + esc(G.g + "|" + G.u) + "\" value=\"" + (G.planned == null ? "" : G.planned) + "\" placeholder=\"" + G.lv.length + "\" style=\"width:70px\">" : (G.planned == null ? G.lv.length : G.planned)) + "</td><td class=\"n\">" + sh + "</td><td class=\"n\">" + (left ? "<b>" + left + "</b>" : "·") + "</td><td class=\"n\">" + (can || "·") + "</td><td class=\"n\">" + (pt || "·") + "</td>" +
       "<td style=\"min-width:120px\"><div class=\"sh-bar small\"><span style=\"width:" + pct + "%\"></span></div></td>" +
       "<td>" + (S.realLead ? "<input type=\"date\" data-sh-dl=\"" + esc(G.g + "|" + G.u) + "\" value=\"" + esc(dl) + "\">" : (dl ? fmtDay(dl) : "—")) + "</td><td>" + st + "</td></tr>";
   }).join("");
-  html += "<div class=\"panel span12\"><h2>By grade and unit <span class=\"aside\">shooting deadline per unit" + (S.realLead ? " — pick a date to set it" : "") + "</span></h2><div class=\"tscroll\"><table><thead><tr><th>Unit</th><th style=\"text-align:end\">Videos</th><th style=\"text-align:end\">Shot</th><th style=\"text-align:end\">Not shot</th><th style=\"text-align:end\">Cancelled</th><th style=\"text-align:end\">Parts</th><th>Progress</th><th>Shooting deadline</th><th>Status</th></tr></thead><tbody>" + rowsHtml + "</tbody></table></div></div>";
+  html += "<div class=\"panel span12\"><h2>By grade and unit <span class=\"aside\">" + (S.realLead ? "type how many videos each unit has (AR and EN and each part count) and pick its shooting deadline" : "videos, shot and shooting deadline per unit") + "</span></h2><div class=\"tscroll\"><table><thead><tr><th>Unit</th><th style=\"text-align:end\">Videos in unit</th><th style=\"text-align:end\">Shot</th><th style=\"text-align:end\">Not shot</th><th style=\"text-align:end\">Cancelled</th><th style=\"text-align:end\">Parts</th><th>Progress</th><th>Shooting deadline</th><th>Status</th></tr></thead><tbody>" + rowsHtml + "</tbody></table></div>" +
+    (S.realLead ? "<form id=\"shAddUnit\" class=\"inline-row\" style=\"margin-top:10px\"><b>Add a unit</b><label class=\"f\" style=\"max-width:110px\">Grade<input id=\"shAG\" placeholder=\"G05\"></label><label class=\"f\" style=\"max-width:90px\">Unit<input id=\"shAU\" type=\"number\" min=\"1\"></label><label class=\"f\" style=\"max-width:120px\">Videos<input id=\"shAN\" type=\"number\" min=\"1\"></label><button class=\"btn\" type=\"submit\">Add</button><span class=\"meta\" id=\"shAMsg\">for a unit with nothing shot yet</span></form>" : "") + "</div>";
   // the lists
   const F = S.shootFilter || "notshot", gF = S.shootGrade || "";
   const shotDate = {}; (log ? log.rows : []).forEach(r => { if (r.date) shotDate[r.g + "|" + r.u + "|" + r.v + "|" + r.lang] = r.date; });
   const pick = { notshot: notShot, shot, cancelled, parts }[F].filter(x => !gF || x.g === gF);
   const grades = [...new Set(items.map(x => x.g))].sort();
   html += "<div class=\"panel span12\"><h2>Videos</h2><div class=\"chips\">" +
-    [["notshot", "Not shot", notShot.length], ["shot", "Shot", shot.length], ["cancelled", "Cancelled", cancelled.length], ["parts", "Divided into parts", parts.length]].map(([k, l, n]) => "<button type=\"button\" aria-pressed=\"" + (F === k) + "\" data-sh-f=\"" + k + "\">" + l + " <span>" + n + "</span></button>").join("") +
+    [["notshot", "Not shot", totLeft], ["shot", "Shot", shot.length], ["cancelled", "Cancelled", cancelled.length], ["parts", "Divided into parts", parts.length]].map(([k, l, n]) => "<button type=\"button\" aria-pressed=\"" + (F === k) + "\" data-sh-f=\"" + k + "\">" + l + " <span>" + n + "</span></button>").join("") +
     " <select id=\"shGrade\" style=\"margin-left:8px;width:auto\"><option value=\"\">All grades</option>" + grades.map(g => "<option" + (g === gF ? " selected" : "") + ">" + esc(g) + "</option>").join("") + "</select></div>" +
     (pick.length ? "<div class=\"tscroll\"><table><thead><tr><th>Grade</th><th>Unit</th><th>Video</th><th>State</th><th>Shot on</th></tr></thead><tbody>" + pick.slice(0, 400).map(x => {
+      if (x.missing) return "<tr><td>" + esc(x.g) + "</td><td>" + esc(x.u) + "</td><td class=\"meta\">" + esc(x.video) + "</td><td><span class=\"pill warn\">Not shot</span></td><td>—</td></tr>";
       const sd = shotDate[x.g + "|" + x.u + "|" + x.v + "|" + x.lang] || shotDate[x.g + "|" + x.u + "|" + x.v + "|"] || "";
-      return "<tr><td>" + esc(x.g) + "</td><td>" + esc(x.u) + "</td><td class=\"code\">" + esc(x.video) + "</td><td>" + (x.cancelled ? "<span class=\"pill\">Cancelled</span>" : x.shot ? "<span class=\"pill ok\">Shot</span>" : "<span class=\"pill warn\">Not shot</span>") + (x.part ? " <span class=\"pill acc\">part " + x.part + "</span>" : "") + "</td><td class=\"code\">" + (sd ? fmtDay(sd) : "—") + "</td></tr>"; }).join("") + "</tbody></table></div>" + (pick.length > 400 ? "<p class=\"meta\">Showing 400 of " + pick.length + ". Pick a grade to narrow it.</p>" : "") : "<p class=\"empty\">Nothing here.</p>") + "</div>";
+      return "<tr><td>" + esc(x.g) + "</td><td>" + esc(x.u) + "</td><td class=\"code\">" + esc(x.video) + "</td><td>" + (x.missing ? "<span class=\"pill warn\">Not shot</span>" : x.cancelled ? "<span class=\"pill\">Cancelled</span>" : x.shot ? "<span class=\"pill ok\">Shot</span>" : "<span class=\"pill warn\">Not shot</span>") + (x.part ? " <span class=\"pill acc\">part " + x.part + "</span>" : "") + "</td><td class=\"code\">" + (sd ? fmtDay(sd) : "—") + "</td></tr>"; }).join("") + "</tbody></table></div>" + (pick.length > 400 ? "<p class=\"meta\">Showing 400 of " + pick.length + ". Pick a grade to narrow it.</p>" : "") : "<p class=\"empty\">Nothing here.</p>") + "</div>";
   // settings
   if (S.realLead) html += "<div class=\"panel span12\"><h2>Shooting target</h2><form id=\"shForm\" class=\"inline-row\"><label class=\"f\" style=\"max-width:220px\">Videos per workday (team)<input type=\"number\" min=\"0\" max=\"200\" id=\"shTarget\" value=\"" + esc(cfg.target) + "\"></label><button class=\"btn\" type=\"submit\">Save</button><span class=\"meta\" id=\"shMsg\"></span></form><p class=\"meta\">AR and EN count separately, and each part counts. Fridays and the public holidays in KPI settings aren't workdays. Shoots per day come from the Shooting Log's Date column (it's filled with the day of the sync when left empty).</p></div>";
   box.innerHTML = html;
@@ -1970,11 +1984,20 @@ function renderShooting() {
 document.addEventListener("click", e => { const b = e.target.closest("[data-sh-f]"); if (b) { S.shootFilter = b.dataset.shF; renderShooting(); } });
 document.addEventListener("change", async e => {
   if (e.target.id === "shGrade") { S.shootGrade = e.target.value; renderShooting(); return; }
+  const pl = e.target.closest("[data-sh-pl]");
+  if (pl && S.realLead) { const p = { ...shootCfg().planned }; if (pl.value === "") delete p[pl.dataset.shPl]; else p[pl.dataset.shPl] = Math.max(0, +pl.value || 0); await setDoc(doc(db, "dash_settings", "shooting"), { planned: p }, { merge: true }).catch(err => alert("Couldn't save: " + err.message)); return; }
   const d = e.target.closest("[data-sh-dl]"); if (!d || !S.realLead) return;
   const dls = { ...shootCfg().deadlines }; if (d.value) dls[d.dataset.shDl] = d.value; else delete dls[d.dataset.shDl];
   await setDoc(doc(db, "dash_settings", "shooting"), { deadlines: dls }, { merge: true }).catch(err => alert("Couldn't save: " + err.message));
 });
 document.addEventListener("submit", async e => {
   if (e.target.id === "shForm") { e.preventDefault(); try { await setDoc(doc(db, "dash_settings", "shooting"), { target: Math.max(0, +$("#shTarget").value || 0) }, { merge: true }); $("#shMsg").textContent = "Saved ✓"; } catch (err) { $("#shMsg").textContent = "Couldn't save: " + err.message; } }
+  if (e.target.id === "shAddUnit") {
+    e.preventDefault();
+    const g = gradeKey($("#shAG").value), u = String(+$("#shAU").value || ""), n = +$("#shAN").value || 0;
+    if (!/^G\d+$/.test(g) || !+u || !n) { $("#shAMsg").textContent = "Fill grade (e.g. G05), unit and number of videos."; return; }
+    const p = { ...shootCfg().planned, [g + "|" + u]: n };
+    try { await setDoc(doc(db, "dash_settings", "shooting"), { planned: p }, { merge: true }); $("#shAMsg").textContent = "Added ✓"; } catch (err) { $("#shAMsg").textContent = "Couldn't save: " + err.message; }
+  }
   if (e.target.id === "shLogForm") { e.preventDefault(); try { const r = await addExtraSheet($("#shLogUrl").value, "Shooting Log"); $("#shLogMsg").textContent = r === "already" ? "Already linked — waiting for the sync." : "Linked ✓ It shows here within a minute (share the sheet with adham.youssry@sciencestreets.com)."; } catch (err) { $("#shLogMsg").textContent = "That doesn't look like a Google Sheets link."; } }
 });
