@@ -1601,6 +1601,7 @@ onAuthStateChanged(auth, async user => {
   }
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
   // career ladder (everyone reads it; leads manage it)
+  live(doc(db, "dash_settings", "layout"), snap => { S.layout = snap.exists() ? snap.data() : null; applyLayout(); });
   live(doc(db, "dash_settings", "shooting"), snap => { S.shootSettings = snap.exists() ? snap.data() : null; renderShooting(); });
   live(doc(db, "dash_settings", "career"), snap => { S.careerSettings = snap.exists() ? snap.data() : null; renderCareer(); });
   live(collection(db, "dash_career"), s => {
@@ -2000,4 +2001,58 @@ document.addEventListener("submit", async e => {
     try { await setDoc(doc(db, "dash_settings", "shooting"), { planned: p }, { merge: true }); $("#shAMsg").textContent = "Added ✓"; } catch (err) { $("#shAMsg").textContent = "Couldn't save: " + err.message; }
   }
   if (e.target.id === "shLogForm") { e.preventDefault(); try { const r = await addExtraSheet($("#shLogUrl").value, "Shooting Log"); $("#shLogMsg").textContent = r === "already" ? "Already linked — waiting for the sync." : "Linked ✓ It shows here within a minute (share the sheet with adham.youssry@sciencestreets.com)."; } catch (err) { $("#shLogMsg").textContent = "That doesn't look like a Google Sheets link."; } }
+});
+
+/* ======================= Arrange tabs (move panels up / down) ======================= */
+/* Gold arranges each tab once for everyone: dash_settings/layout = { tabs: { <tab>: [panel keys in order] } }.
+   Works with CSS `order`, so panels that re-render keep their place. */
+S.arrange = false;
+function panelKey(p) {
+  if (p.id) return p.id;
+  const h = p.querySelector("h2"); if (!h) return "";
+  const c = h.cloneNode(true); c.querySelectorAll(".aside").forEach(x => x.remove());
+  return "h:" + c.textContent.replace(/\(\d+\)/g, "").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 40);
+}
+function tabPanels(sec) { return [...sec.querySelectorAll(":scope > .grid > .panel, :scope > .grid > div > .panel")].filter(p => p.parentElement.classList.contains("grid")); }
+function applyLayout() {
+  const L = (S.layout && S.layout.tabs) || {};
+  document.querySelectorAll("section.view").forEach(sec => {
+    const tab = sec.id.replace(/^v-/, ""), order = L[tab] || [];
+    tabPanels(sec).forEach((p, i) => {
+      const k = panelKey(p), at = order.indexOf(k);
+      const want = String(at >= 0 ? at : 1000 + i);
+      if (p.style.order !== want) p.style.order = want;
+      let ctl = p.querySelector(":scope > .arr-ctl");
+      if (S.arrange && k) {
+        if (!ctl) { ctl = document.createElement("div"); ctl.className = "arr-ctl"; ctl.innerHTML = "<button type=\"button\" data-arr=\"-1\" title=\"Move up\">▲</button><button type=\"button\" data-arr=\"1\" title=\"Move down\">▼</button><button type=\"button\" data-arr=\"top\" title=\"Move to the top\">⤒</button>"; p.prepend(ctl); }
+      } else if (ctl) ctl.remove();
+      p.classList.toggle("arranging", S.arrange && !!k);
+    });
+    // the Arrange button, top of every tab (leads)
+    let bar = sec.querySelector(":scope > .arr-bar");
+    if (S.realLead && sec.id !== "v-search") {
+      if (!bar) { bar = document.createElement("div"); bar.className = "arr-bar"; sec.prepend(bar); }
+      const html = S.arrange ? "<span class=\"meta\">Use ▲ ▼ on each box to move it. Everyone sees this order.</span> <button class=\"btn small ghost\" type=\"button\" data-arr-reset>Reset this tab</button> <button class=\"btn small\" type=\"button\" data-arr-toggle>Done</button>" : "<button class=\"btn small ghost\" type=\"button\" data-arr-toggle>↕ Arrange</button>";
+      if (bar.dataset.h !== html) { bar.innerHTML = html; bar.dataset.h = html; }
+    } else if (bar) bar.remove();
+  });
+}
+let layoutTimer = null;
+new MutationObserver(() => { clearTimeout(layoutTimer); layoutTimer = setTimeout(applyLayout, 60); }).observe(document.querySelector("main") || document.body, { childList: true, subtree: true });
+document.addEventListener("click", async e => {
+  const tg = e.target.closest("[data-arr-toggle]"); if (tg) { S.arrange = !S.arrange; applyLayout(); return; }
+  const rs = e.target.closest("[data-arr-reset]");
+  if (rs) { const tab = rs.closest("section.view").id.replace(/^v-/, ""); const tabs = { ...((S.layout || {}).tabs || {}) }; delete tabs[tab]; S.layout = { tabs }; applyLayout(); await setDoc(doc(db, "dash_settings", "layout"), { tabs }).catch(() => { }); return; }
+  const b = e.target.closest("[data-arr]"); if (!b || !S.realLead) return;
+  const p = b.closest(".panel"), sec = p.closest("section.view"), tab = sec.id.replace(/^v-/, "");
+  // the panels as they show now (by their order), then move this one
+  const list = tabPanels(sec).filter(x => panelKey(x)).sort((a, c) => (+a.style.order || 0) - (+c.style.order || 0)).map(panelKey);
+  const k = panelKey(p), i = list.indexOf(k); if (i < 0) return;
+  list.splice(i, 1);
+  const j = b.dataset.arr === "top" ? 0 : Math.max(0, Math.min(list.length, i + +b.dataset.arr));
+  list.splice(j, 0, k);
+  const tabs = { ...((S.layout || {}).tabs || {}), [tab]: list };
+  S.layout = { tabs }; applyLayout();
+  p.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  await setDoc(doc(db, "dash_settings", "layout"), { tabs }).catch(err => alert("Couldn't save the layout: " + err.message));
 });
