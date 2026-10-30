@@ -316,3 +316,11 @@ a.vlink{text-decoration:none;cursor:pointer}
 .car-top{font:800 16px var(--f-display)}
 .car-form input{width:100%}
 @media (max-width:760px){.car-row{grid-template-columns:1fr}}
+/* shooting */
+.sh-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.sh-tile{border:2px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.sh-tile b{font:800 22px var(--f-display)} .sh-tile span{font-size:12px;color:var(--muted)} .sh-tile em{font-style:normal;font-size:11px;color:var(--muted)}
+.sh-tile.ok{border-color:var(--ok-fill);background:var(--ok-soft)} .sh-tile.warn{border-color:var(--warn-fill);background:var(--warn-soft)} .sh-tile.bad{border-color:var(--bad-fill);background:var(--bad-soft)}
+.sh-bar{height:14px;border-radius:99px;background:var(--sunk);border:2px solid var(--ink);overflow:hidden}
+.sh-bar span{display:block;height:100%;background:linear-gradient(90deg,var(--ok-fill),var(--accent))}
+.sh-bar.small{height:10px;border-width:1px}
