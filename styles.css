@@ -289,3 +289,30 @@ html.embedded nav.tabs button{padding:6px 10px}
 html.embedded .prio-bar{padding-block:6px 8px}
 html.embedded .wrap{padding-block-end:64px}
 a.vlink{text-decoration:none;cursor:pointer}
+/* career ladder */
+.ladder{display:flex;gap:0;list-style:none;margin:6px 0 16px;padding:0;overflow-x:auto}
+.ladder li{flex:1;min-width:92px;display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;font-size:12px;color:var(--muted);text-align:center}
+.ladder li::before{content:"";position:absolute;top:15px;left:-50%;width:100%;height:3px;background:var(--line);z-index:0}
+.ladder li:first-child::before{display:none}
+.ladder li.past::before,.ladder li.now::before{background:var(--ok-fill)}
+.lad-dot{position:relative;z-index:1;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font:800 13px var(--f-display);background:var(--surface);border:2px solid var(--line);color:var(--muted)}
+.ladder li.past .lad-dot{background:var(--ok-fill);border-color:var(--ok-fill);color:#fff}
+.ladder li.now .lad-dot{background:var(--accent);border-color:var(--ink);color:#fff;transform:scale(1.15)}
+.ladder li.now .lad-name{color:var(--ink);font-weight:800}
+.car-next{margin:4px 0 8px;font-size:14px}
+.car-bar{height:16px;border-radius:99px;background:var(--sunk);border:2px solid var(--ink);overflow:hidden;margin-bottom:6px}
+.car-bar span{display:block;height:100%;background:linear-gradient(90deg,var(--ok-fill),var(--accent));border-radius:99px;transition:width .4s}
+.car-months{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.car-m{display:inline-flex;flex-direction:column;align-items:center;font-size:10px;padding:3px 7px;border-radius:8px;background:var(--sunk);color:var(--muted)}
+.car-m b{font-size:12px}
+.car-m.up{background:var(--ok-soft);color:var(--ok)} .car-m.down{background:var(--bad-soft);color:var(--bad)} .car-m.same{background:var(--warn-soft);color:var(--warn)}
+.car-unlocks{list-style:none;padding:0;margin:0;display:grid;gap:6px}
+.car-unlocks li{color:var(--muted)} .car-unlocks li.on{color:var(--ink)}
+.car-list{display:grid;gap:12px}
+.car-row{display:grid;grid-template-columns:minmax(150px,1fr) minmax(220px,2fr) auto;gap:14px;align-items:start;padding:12px;border:1px solid var(--line);border-radius:12px}
+.car-ctrl{display:flex;flex-wrap:wrap;gap:8px;align-items:end;max-width:360px}
+.car-ctrl .f{margin:0}
+.car-ready{background:var(--ok-soft);color:var(--ok);padding:8px 12px;border-radius:10px}
+.car-top{font:800 16px var(--f-display)}
+.car-form input{width:100%}
+@media (max-width:760px){.car-row{grid-template-columns:1fr}}

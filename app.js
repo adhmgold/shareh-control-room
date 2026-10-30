@@ -551,7 +551,7 @@ function renderTeam() {
   $("#rosterList").innerHTML = names.map(n => "<option>" + esc(n) + "</option>").join("");
   $("#roleTable").innerHTML = S.roles.length ? "<table><thead><tr><th>Email</th><th>Name</th><th>Access</th><th></th></tr></thead><tbody>" + S.roles.map(r => "<tr><td>" + esc(r.id) + "</td><td>" + esc(r.name || "") + "</td><td><span class=\"pill " + (r.role === "lead" ? "acc" : "") + "\">" + (r.role === "lead" ? "Lead" : "Editor") + "</span></td><td><span><button class=\"link\" data-role-del=\"" + esc(r.id) + "\">Remove</button></span></td></tr>").join("") + "</tbody></table>" : "<p class=\"empty\">Only you can open the dashboard right now. Add your team above.</p>";
 }
-function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview(); renderPlans(); renderAvailability(); renderResetBtn(); setSync(); }
+function renderAll() { renderPrioBar(); renderSearch(); withOverviewData(renderOverview); renderProjects(); renderDeadlines(); renderLinks(); renderMyWork(); renderTeam(); renderKpi(); renderPauseReview(); renderEditReview(); renderDayReview(); renderPlans(); renderAvailability(); renderResetBtn(); renderCareer(); setSync(); }
 
 /* ---------- global search: "who is on it and what's its status" ---------- */
 const compact = s => String(s || "").toUpperCase().replace(/VO(\d)/g, "V0$1").replace(/[^A-Z0-9؀-ۿ]/g, "");
@@ -904,7 +904,7 @@ function renderKpi() {
     fact("Period", "From the 25th of one month to the 24th of the next. Tasks belong to the period their deadline falls in.") +
     fact("Upcoming tasks", "Tasks whose deadline hasn't arrived and aren't done yet don't count until they're finished or overdue.") +
     "</div><p class=\"meta\">The current period updates live.</p>";
-  $("#kpiSettingsPanel").hidden = !S.isLead;
+  $("#kpiSettingsPanel").hidden = !S.realLead;
   if (S.isLead) {
     const fromSnap = m => { const live = computeKpi(m, S.entries), snap = ((S.kpiSnap || {})[m] || []).map(r => ({ ...r, name: currentName(r.name) })); if (m !== curMonth() && snap && snap.length && !live.rows.some(r => r.total)) { return { month: m, bounds: periodBounds(m), rows: snap.slice().sort((a, b2) => (b2.enough - a.enough) || ((b2.score ?? -1) - (a.score ?? -1))), saved: true }; } return live; };
     const res = fromSnap(S.kpiMonth), prev = fromSnap(prevMonth(S.kpiMonth));
@@ -1398,11 +1398,11 @@ $("#dlForm").addEventListener("submit", async e => {
   try { await addDoc(collection(db, "dash_deadlines"), data); e.target.reset(); $("#dlMsg").textContent = "Added."; }
   catch (err) { $("#dlMsg").textContent = "Couldn't add it. Check your connection and try again."; }
 });
-$("#lkUrl").addEventListener("input", () => { $("#lkSheetRow").hidden = !(S.isLead && sheetIdFromUrl($("#lkUrl").value)); });
+$("#lkUrl").addEventListener("input", () => { $("#lkSheetRow").hidden = !(S.realLead && sheetIdFromUrl($("#lkUrl").value)); });
 $("#lkForm").addEventListener("submit", async e => {
   e.preventDefault();
   const url = $("#lkUrl").value.trim(); if (!/^https?:\/\//i.test(url)) return;
-  const title = $("#lkTitle").value.trim(), useSheet = S.isLead && $("#lkUseSheet").checked && sheetIdFromUrl(url);
+  const title = $("#lkTitle").value.trim(), useSheet = S.realLead && $("#lkUseSheet").checked && sheetIdFromUrl(url);
   try {
     if (useSheet) { await addExtraSheet(url, title); }   // a Google Sheet is connected as a data source; it's listed under Sheets
     else await addDoc(collection(db, "dash_links"), { title, url, group: $("#lkGroup").value.trim() || "Other", by: S.email, at: Date.now() });
@@ -1420,7 +1420,7 @@ $("#roleForm").addEventListener("submit", async e => {
 
 /* ---------- each tab's toolbar: Choose sheet tabs + Reset tab (leads) ---------- */
 function currentTab() { const v = document.querySelector("section.view.on"); return v ? v.id.slice(2) : "overview"; }
-function renderResetBtn() { document.querySelectorAll(".tab-tools").forEach(t => { t.hidden = !S.isLead; }); }
+function renderResetBtn() { document.querySelectorAll(".tab-tools").forEach(t => { t.hidden = !S.realLead; }); }
 function renderSrcPanel(tabKey) {
   const box = $("#src-" + tabKey), cfg = srcCfg(), chosen = new Set(cfg[tabKey] || []);
   const tabs = S.allTabs || [];
@@ -1569,12 +1569,20 @@ onAuthStateChanged(auth, async user => {
     S.isLead = S.role === "lead";
     S.myName = roleDoc && roleDoc.name ? roleDoc.name : null;
   }
+  // career ladder: an editor's level can give more access (Team Leader and up get the lead tools)
+  S.careerLead = false; S.myRank = null;
+  { const me = S.myName || (S.via === "tracker" && !S.isLead ? S.trackerName : null);
+    if (me && !S.isLead) {
+      try { const cs = await getDoc(doc(db, "dash_career", me)); const c = cs.exists() ? cs.data() : null; S.myRank = c && c.rank != null ? +c.rank : null; } catch (e) { S.myRank = null; }
+      if (S.myRank != null && S.myRank >= 4) { S.isLead = true; S.careerLead = true; S.myName = me; }
+    } }
+  S.realLead = S.isLead && !S.careerLead;
   $("#loading").hidden = true;
-  $("#whoText").textContent = (S.via === "tracker" ? S.trackerName + " · via SS Tracker" : (S.myName || user.displayName || S.email)) + (S.isLead ? " · lead" : "");
+  $("#whoText").textContent = (S.via === "tracker" ? S.trackerName + " · via SS Tracker" : (S.myName || user.displayName || S.email)) + (S.careerLead ? " · " + levelName(S.myRank) : S.isLead ? " · lead" : "");
   $("#signOutBtn").hidden = S.via === "tracker";
-  $("#teamTab").hidden = !S.isLead;
+  $("#teamTab").hidden = !S.realLead;
   $("#gate").hidden = true; $("#app").hidden = false;
-  try { const t = localStorage.getItem("scr-tab"); if (t && document.getElementById("v-" + t) && (t !== "team" || S.isLead)) showTab(t); } catch (e) { }
+  try { const t = localStorage.getItem("scr-tab"); if (t && document.getElementById("v-" + t) && (t !== "team" || S.realLead)) showTab(t); } catch (e) { }
 
   Object.keys(SHEETS).filter(k => !SHEETS[k].linkOnly).forEach(k => live(doc(db, "dash_sheets", k), snap => {
     if (!snap.exists()) return;
@@ -1592,6 +1600,15 @@ onAuthStateChanged(auth, async user => {
     live(doc(db, "config", "credentials"), snap => { const d = snap.exists() ? snap.data() : null; S.legacyCreds = d && d.editors ? { editors: Object.keys(d.editors), renamed: d.renamed || {} } : null; applyRoster(); });
   }
   live(doc(db, "dash_settings", "kpi"), snap => { S.kpiSettings = snap.exists() ? snap.data() : null; renderKpi(); });
+  // career ladder (everyone reads it; leads manage it)
+  live(doc(db, "dash_settings", "career"), snap => { S.careerSettings = snap.exists() ? snap.data() : null; renderCareer(); });
+  live(collection(db, "dash_career"), s => {
+    const m = {}; s.docs.forEach(d => { m[d.id] = { ...d.data(), _sig: (S.career && S.career[d.id] && S.career[d.id]._sig) || undefined }; }); S.career = m;
+    const me = S.myName || S.trackerName; if (me && m[me] && !S.realLead) S.myRank = m[me].rank != null ? +m[me].rank : null;
+    renderCareer(); scheduleCareerCalc();
+  });
+  if (!S.isLead && S.myRank != null && S.myRank >= 2) live(collection(db, "dash_kpi", curMonth(), "editors"), s => { S.kpiTeam = s.docs.map(d => d.data()); renderCareer(); });
+  if (S.realLead) setTimeout(scheduleCareerCalc, 8000);   // once the entries have loaded
   live(collection(db, "dash_flags"), s => { const f = {}; s.docs.forEach(d => { f[d.id] = true; }); S.flags = f; renderAll(); });
   live(collection(db, "dash_links"), s => { S.links = s.docs.map(d => ({ id: d.id, ...d.data() })); renderLinks(); });
   live(collection(db, "activeTakes"), s => { S.takes = s.docs.map(d => ({ editor: d.id, ...d.data() })).filter(x => x.video); withOverviewData(renderOverview); renderMyWork(); renderTeam(); renderSearch(); renderAvailability(); });
@@ -1613,4 +1630,202 @@ onAuthStateChanged(auth, async user => {
   S.kpiMonth = S.kpiMonth || curMonth();
   subscribeMyKpi();
   renderAll();
+});
+
+/* ======================= Career ladder ======================= */
+/* dash_settings/career = { levels: [{ key, name, months, target }], floor }  (months/target = what it takes to LEAVE that level)
+   dash_career/{editor}  = { name, rank, level, since: "YYYY-MM" (first period that counts), history: [...], progress: {...} }
+   Progress: every finished KPI period from `since` with a KPI at or above the level's target fills one step;
+   a period under the floor takes one step back. Full bar = ready; a lead promotes (never automatic). */
+const CAREER_DEFAULT = {
+  floor: 60,
+  levels: [
+    { key: "intern", name: "Intern", months: 3, target: 70 },
+    { key: "junior", name: "Junior", months: 6, target: 80 },
+    { key: "mid", name: "Mid-level", months: 9, target: 85 },
+    { key: "senior", name: "Senior", months: 12, target: 88 },
+    { key: "lead", name: "Team Leader", months: 12, target: 90 },
+    { key: "manager", name: "Manager", months: 0, target: 0 }
+  ]
+};
+// what each level unlocks (by its place on the ladder: 0 = Intern … 5 = Manager); also enforced by the database rules
+const CAREER_UNLOCKS = [
+  { rank: 1, text: "Add tasks to his own plan in SS Tracker" },
+  { rank: 2, text: "See the team's KPI ranking in the Control Room" },
+  { rank: 3, text: "Assign tasks to lower levels and send their work back for edits (SS Tracker › My team)" },
+  { rank: 4, text: "Lead tools in the Control Room: attendance and pause reviews, task reviews, deadlines, everyone's KPI" }
+];
+function careerCfg() {
+  const c = S.careerSettings || {};
+  const lv = Array.isArray(c.levels) && c.levels.length === CAREER_DEFAULT.levels.length ? c.levels : CAREER_DEFAULT.levels;
+  return { floor: c.floor != null && c.floor !== "" ? +c.floor : CAREER_DEFAULT.floor, levels: lv.map((l, i) => ({ ...CAREER_DEFAULT.levels[i], ...l })) };
+}
+function careerOf(name) { return (S.career || {})[name] || null; }
+function rankOf(name) { const c = careerOf(name); return c && c.rank != null ? +c.rank : null; }
+function levelName(rank) { return rank == null ? "Not placed yet" : (careerCfg().levels[rank] || {}).name || "—"; }
+function nextMonth(m) { const [y, mo] = m.split("-").map(Number); const d = new Date(y, mo, 1); return d.getFullYear() + "-" + pad(d.getMonth() + 1); }
+
+/** Steps toward the next level from the finished periods' KPI. scores = { "YYYY-MM": score|null } */
+function careerProgress(c, scores) {
+  const cfg = careerCfg(), rank = c && c.rank != null ? +c.rank : null;
+  if (rank == null) return null;
+  const lv = cfg.levels[rank] || {}, top = rank >= cfg.levels.length - 1;
+  const need = top ? 0 : Math.max(1, +lv.months || 1), target = +lv.target || 0;
+  const months = []; let steps = 0;
+  const last = prevMonth(curMonth());
+  for (let m = c.since || curMonth(), i = 0; m <= last && i < 60; m = nextMonth(m), i++) {
+    const s = scores[m]; let res = "none";
+    if (s != null && !top) {
+      if (s >= target) { steps = Math.min(need, steps + 1); res = "up"; }
+      else if (s < cfg.floor) { steps = Math.max(0, steps - 1); res = "down"; }
+      else res = "same";
+    }
+    months.push({ m, score: s == null ? null : Math.round(s), res });
+  }
+  return { steps, need, target, floor: cfg.floor, top, ready: !top && steps >= need, months: months.slice(-12) };
+}
+
+/* leads only: KPI of each finished period, from the saved monthly records (the last period is recomputed live) */
+const careerKpiCache = {};
+let careerCalcTimer = null;
+function scheduleCareerCalc() { clearTimeout(careerCalcTimer); careerCalcTimer = setTimeout(() => { calcCareer().catch(e => console.warn("career", e)); }, 3000); }
+async function calcCareer() {
+  if (!S.realLead || !S.career) return;
+  const names = Object.keys(S.career).filter(n => S.career[n].rank != null);
+  if (!names.length) return;
+  const last = prevMonth(curMonth());
+  let first = last;
+  names.forEach(n => { const s = S.career[n].since || curMonth(); if (s < first) first = s; });
+  { let lim = last; for (let i = 0; i < 24; i++) lim = prevMonth(lim); if (first < lim) first = lim; }
+  const scores = {};   // name -> month -> score
+  for (let m = first; m <= last; m = nextMonth(m)) {
+    let rows;
+    if (m === last && (S.entries || []).length) {
+      rows = computeKpi(m, S.entries).rows;   // the period that just ended: exact, and saved as final
+      rows.forEach(r => {
+        if (!r.enough && !r.total) return;
+        const data = { ...r, month: m, final: true }, sig = JSON.stringify(data), key = m + "/" + r.name;
+        if (kpiWritten[key] === sig) return; kpiWritten[key] = sig;
+        setDoc(doc(db, "dash_kpi", m, "editors", r.name), { ...data, savedAt: Date.now() }).catch(() => { delete kpiWritten[key]; });
+      });
+    } else {
+      if (!careerKpiCache[m]) { try { careerKpiCache[m] = (await getDocs(collection(db, "dash_kpi", m, "editors"))).docs.map(d => d.data()); } catch (e) { careerKpiCache[m] = []; } }
+      rows = careerKpiCache[m];
+    }
+    rows.forEach(r => { const n = currentName(r.name); (scores[n] = scores[n] || {})[m] = r.enough === false ? null : (r.score == null ? null : +r.score); });
+  }
+  for (const n of names) {
+    const c = S.career[n], p = careerProgress(c, scores[n] || {});
+    if (!p) continue;
+    const sig = JSON.stringify(p);
+    if (c.progress && JSON.stringify({ ...c.progress, at: undefined }) === JSON.stringify({ ...p, at: undefined })) continue;
+    if (c._sig === sig) continue;
+    c._sig = sig;
+    await setDoc(doc(db, "dash_career", n), { progress: { ...p, at: Date.now() } }, { merge: true }).catch(() => { });
+  }
+}
+
+/* ---------- the Career tab ---------- */
+function ladderHtml(rank) {
+  const lv = careerCfg().levels;
+  return "<ol class=\"ladder\">" + lv.map((l, i) => "<li class=\"" + (rank == null ? "" : i < rank ? "past" : i === rank ? "now" : "") + "\"><span class=\"lad-dot\">" + (rank != null && i < rank ? "✓" : i + 1) + "</span><span class=\"lad-name\">" + esc(l.name) + "</span></li>").join("") + "</ol>";
+}
+function progressHtml(c, forEditor) {
+  if (!c || c.rank == null) return "<p class=\"meta\">" + (forEditor ? "Your level hasn't been set yet. Gold places everyone on the ladder." : "Not placed on the ladder yet.") + "</p>";
+  const cfg = careerCfg(), lv = cfg.levels[c.rank] || {}, p = c.progress;
+  if (c.rank >= cfg.levels.length - 1) return "<p class=\"car-top\">Top of the ladder 🏆</p>";
+  const next = cfg.levels[c.rank + 1].name;
+  const steps = p ? p.steps : 0, need = p ? p.need : (+lv.months || 1), pct = Math.round(100 * Math.min(steps, need) / need);
+  const chips = p && p.months && p.months.length ? "<div class=\"car-months\">" + p.months.map(x => "<span class=\"car-m " + x.res + "\" title=\"" + esc(monthLabel(x.m)) + "\">" + esc(x.m.slice(5)) + "/" + esc(x.m.slice(2, 4)) + "<b>" + (x.score == null ? "—" : x.score + "%") + "</b></span>").join("") + "</div>" : "";
+  return "<div class=\"car-next\">Next: <b>" + esc(next) + "</b>" + (p && p.ready ? " <span class=\"pill ok\">Ready for promotion" + (forEditor ? " — waiting for Gold" : "") + "</span>" : "") + "</div>" +
+    "<div class=\"car-bar\" role=\"progressbar\" aria-valuemin=\"0\" aria-valuemax=\"" + need + "\" aria-valuenow=\"" + steps + "\"><span style=\"width:" + pct + "%\"></span></div>" +
+    "<div class=\"meta\">" + steps + " of " + need + " good months · a month counts when the KPI is " + (+lv.target || 0) + "% or more · under " + cfg.floor + "% takes one back" + (c.since ? " · counting from " + esc(monthLabel(c.since).split(" · ")[0]) : "") + "</div>" + chips;
+}
+function unlocksHtml(rank) {
+  const r = rank == null ? 1 : rank;
+  return "<ul class=\"car-unlocks\">" + CAREER_UNLOCKS.map(u => "<li class=\"" + (r >= u.rank ? "on" : "") + "\">" + (r >= u.rank ? "✓ " : "🔒 ") + esc(u.text) + " <span class=\"meta\">(" + esc(levelName(u.rank)) + "+)</span></li>").join("") + "</ul>";
+}
+function renderCareer() {
+  const box = $("#careerBody"); if (!box) return;
+  const cfg = careerCfg();
+  const me = S.myName || S.trackerName;
+  let html = "";
+  // the signed-in editor's own card
+  if (me && !S.realLead) {
+    const c = careerOf(me);
+    html += "<div class=\"panel span12 car-me\"><h2>Your career <span class=\"aside\">" + esc(levelName(c ? c.rank : null)) + "</span></h2>" + ladderHtml(c ? c.rank : null) + progressHtml(c, true) +
+      "<h3 class=\"sub-h\">What each level unlocks</h3>" + unlocksHtml(c ? c.rank : null) + "</div>";
+  }
+  // everyone's ladder: leads manage it; Mid-level and up see it
+  const canSee = S.isLead || (S.myRank != null && S.myRank >= 2);
+  if (canSee) {
+    const names = [...new Set([...(S.roster || []), ...Object.keys(S.career || {})])].filter(Boolean).sort((a, b) => ((rankOf(b) ?? -1) - (rankOf(a) ?? -1)) || a.localeCompare(b));
+    const ready = names.filter(n => { const c = careerOf(n); return c && c.progress && c.progress.ready; });
+    html += "<div class=\"panel span12\"><h2>Team ladder <span class=\"aside\">" + names.length + " editors" + (ready.length ? " · <b>" + ready.length + " ready for promotion</b>" : "") + "</span></h2>" +
+      (ready.length && S.realLead ? "<p class=\"car-ready\">Ready for promotion: <b>" + ready.map(esc).join(", ") + "</b></p>" : "") +
+      (names.length ? "<div class=\"car-list\">" + names.map(n => {
+        const c = careerOf(n), r = c ? c.rank : null, last = c && Array.isArray(c.history) && c.history.length ? c.history[c.history.length - 1] : null;
+        const ctrl = S.realLead ? "<div class=\"car-ctrl\"><label class=\"f\">Level<select data-car-set=\"" + esc(n) + "\"><option value=\"\"" + (r == null ? " selected" : "") + ">Not placed</option>" + cfg.levels.map((l, i) => "<option value=\"" + i + "\"" + (r === i ? " selected" : "") + ">" + esc(l.name) + "</option>").join("") + "</select></label>" +
+          (r != null ? "<label class=\"f\">Counting from<select data-car-since=\"" + esc(n) + "\">" + kpiMonths().slice().reverse().map(m => "<option value=\"" + m + "\"" + ((c.since || curMonth()) === m ? " selected" : "") + ">" + esc(monthLabel(m).split(" · ")[0]) + "</option>").join("") + "</select></label>" : "") +
+          (r != null && r < cfg.levels.length - 1 ? "<button class=\"btn small" + (c.progress && c.progress.ready ? "" : " ghost") + "\" type=\"button\" data-car-promote=\"" + esc(n) + "\">Promote to " + esc(cfg.levels[r + 1].name) + "</button>" : "") +
+          (r != null && r > 0 ? " <button class=\"btn small ghost\" type=\"button\" data-car-demote=\"" + esc(n) + "\">Move down</button>" : "") + "</div>" : "";
+        return "<div class=\"car-row\"><div class=\"car-who\"><b>" + esc(n) + "</b> <span class=\"pill " + (r == null ? "" : r >= 4 ? "bad" : r >= 2 ? "acc" : "ok") + "\">" + esc(levelName(r)) + "</span>" +
+          (last ? "<div class=\"meta\">" + esc(last.note || ((last.to > (last.from ?? -1) ? "Promoted" : "Moved") + " to " + levelName(last.to))) + " · " + esc(new Date(last.at).toLocaleDateString([], { dateStyle: "medium" })) + "</div>" : "") + "</div>" +
+          "<div class=\"car-prog\">" + progressHtml(c, false) + "</div>" + ctrl + "</div>";
+      }).join("") + "</div>" : "<p class=\"empty\">No editors yet.</p>") + "</div>";
+  }
+  // ladder settings (real leads)
+  if (S.realLead) {
+    html += "<div class=\"panel span12\"><h2>Ladder settings <span class=\"aside\">what it takes to leave each level</span></h2><form id=\"carForm\" class=\"car-form\"><div class=\"tscroll\"><table><thead><tr><th>#</th><th>Level name</th><th style=\"text-align:end\">Good months needed</th><th style=\"text-align:end\">KPI target</th></tr></thead><tbody>" +
+      cfg.levels.map((l, i) => "<tr><td class=\"n meta\">" + (i + 1) + "</td><td><input data-cl-name=\"" + i + "\" value=\"" + esc(l.name) + "\"></td><td class=\"n\">" + (i < cfg.levels.length - 1 ? "<input type=\"number\" min=\"1\" max=\"36\" data-cl-months=\"" + i + "\" value=\"" + esc(l.months) + "\" style=\"width:80px\">" : "<span class=\"meta\">top</span>") + "</td><td class=\"n\">" + (i < cfg.levels.length - 1 ? "<input type=\"number\" min=\"0\" max=\"100\" data-cl-target=\"" + i + "\" value=\"" + esc(l.target) + "\" style=\"width:80px\"> %" : "") + "</td></tr>").join("") +
+      "</tbody></table></div><div class=\"inline-row\"><label class=\"f\" style=\"max-width:260px\">A month under this KPI takes a step back<input type=\"number\" min=\"0\" max=\"100\" id=\"clFloor\" value=\"" + esc(cfg.floor) + "\"></label>" +
+      "<button class=\"btn\" type=\"submit\">Save ladder</button><span class=\"meta\" id=\"clMsg\"></span></div>" +
+      "<h3 class=\"sub-h\">What each level unlocks</h3>" + unlocksHtml(99).replace(/✓ /g, "") + "<p class=\"meta\">Editors without a level keep what they have today (like Junior) until you place them.</p></form></div>";
+  }
+  // Mid-level and up (not leads): the team's KPI ranking for the current period
+  if (!S.isLead && S.myRank != null && S.myRank >= 2) {
+    const rows = (S.kpiTeam || []).filter(r => r.score != null).sort((a, b) => b.score - a.score);
+    html += "<div class=\"panel span12\"><h2>Team KPI ranking <span class=\"aside\">" + esc(monthLabel(curMonth()).split(" · ")[0]) + "</span></h2>" + (rows.length ? "<div class=\"tscroll\"><table><thead><tr><th>#</th><th>Editor</th><th>Level</th><th style=\"text-align:end\">KPI</th></tr></thead><tbody>" +
+      rows.map((r, i) => "<tr" + (r.name === me ? " class=\"on\"" : "") + "><td class=\"n meta\">" + (i + 1) + "</td><td><b>" + esc(r.name) + "</b></td><td>" + esc(levelName(rankOf(currentName(r.name)))) + "</td><td class=\"n\"><span class=\"score " + scoreCls(r.score) + "\">" + pctTxt(r.score) + "</span></td></tr>").join("") + "</tbody></table></div>" : "<p class=\"empty\">No KPI saved for this period yet.</p>") + "</div>";
+  }
+  box.innerHTML = html || "<div class=\"panel span12\"><p class=\"empty\">Sign in with your SS Tracker name to see your career.</p></div>";
+  const tab = $("#careerTab"); if (tab) { const n = S.realLead ? Object.values(S.career || {}).filter(c => c.progress && c.progress.ready).length : 0; tab.textContent = "Career" + (n ? " (" + n + ")" : ""); }
+}
+async function setCareer(name, patch, hist) {
+  const c = careerOf(name) || {};
+  const history = (Array.isArray(c.history) ? c.history : []).concat(hist ? [{ ...hist, at: Date.now(), by: S.trackerName || S.email || "lead" }] : []).slice(-30);
+  await setDoc(doc(db, "dash_career", name), { name, ...patch, history, updatedAt: Date.now() }, { merge: true });
+}
+document.addEventListener("change", async e => {
+  const s = e.target.closest("[data-car-set]");
+  if (s && S.realLead) {
+    const n = s.dataset.carSet, c = careerOf(n), from = c ? c.rank : null, to = s.value === "" ? null : +s.value;
+    if (to === from) return;
+    const lv = careerCfg().levels;
+    await setCareer(n, to == null ? { rank: null, level: "" } : { rank: to, level: lv[to].key, since: curMonth(), progress: null },
+      { from, to, note: to == null ? "Removed from the ladder" : "Placed as " + lv[to].name }).catch(err => alert("Couldn't save: " + err.message));
+    scheduleCareerCalc(); return;
+  }
+  const sc = e.target.closest("[data-car-since]");
+  if (sc && S.realLead) { await setDoc(doc(db, "dash_career", sc.dataset.carSince), { since: sc.value, progress: null }, { merge: true }).catch(() => { }); delete (careerOf(sc.dataset.carSince) || {})._sig; scheduleCareerCalc(); }
+});
+document.addEventListener("click", async e => {
+  const p = e.target.closest("[data-car-promote],[data-car-demote]");
+  if (!p || !S.realLead) return;
+  const n = p.dataset.carPromote || p.dataset.carDemote, up = !!p.dataset.carPromote, c = careerOf(n); if (!c || c.rank == null) return;
+  const lv = careerCfg().levels, to = c.rank + (up ? 1 : -1); if (to < 0 || to >= lv.length) return;
+  if (p.dataset.armed !== "1") { p.dataset.armed = "1"; p.textContent = (up ? "Promote " : "Move ") + n + " to " + lv[to].name + "? Click again"; return; }
+  p.disabled = true;
+  await setCareer(n, { rank: to, level: lv[to].key, since: curMonth(), progress: null }, { from: c.rank, to, note: (up ? "Promoted to " : "Moved down to ") + lv[to].name }).catch(err => alert("Couldn't save: " + err.message));
+  delete c._sig; scheduleCareerCalc();
+});
+document.addEventListener("submit", async e => {
+  if (e.target.id !== "carForm") return;
+  e.preventDefault();
+  const cur = careerCfg();
+  const levels = cur.levels.map((l, i) => ({ key: l.key, name: (document.querySelector("[data-cl-name=\"" + i + "\"]").value || l.name).trim(),
+    months: i < cur.levels.length - 1 ? Math.max(1, +document.querySelector("[data-cl-months=\"" + i + "\"]").value || l.months) : 0,
+    target: i < cur.levels.length - 1 ? clamp(+document.querySelector("[data-cl-target=\"" + i + "\"]").value || 0) : 0 }));
+  try { await setDoc(doc(db, "dash_settings", "career"), { levels, floor: clamp(+$("#clFloor").value || 0), updatedAt: Date.now() }); $("#clMsg").textContent = "Saved ✓"; Object.values(S.career || {}).forEach(c => { delete c._sig; }); scheduleCareerCalc(); }
+  catch (err) { $("#clMsg").textContent = "Couldn't save: " + err.message; }
 });
